@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import csv, re
+import difflib
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,7 +22,155 @@ OUT_COLS_WITH_COMM_AND_BOARD = ["MARKETBOARD", "TYPE", "TICKER", "VOLUME", "DATE
 DATE_FMT = "%d.%m.%Y"
 
 def parse_date(s: str):
-    return datetime.strptime(s.strip(), DATE_FMT).date()
+    txt = (s or "").strip()
+    if not txt:
+        raise ValueError("empty date")
+    for fmt in (DATE_FMT, "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(txt, fmt).date()
+        except Exception:
+            pass
+    try:
+        return datetime.fromisoformat(txt.replace("Z", "+00:00")).date()
+    except Exception:
+        pass
+    raise ValueError(f"invalid date: '{s}'")
+
+
+def _norm_col_name(name: str) -> str:
+    if name is None:
+        return ""
+    s = str(name).strip().casefold()
+    for ch in ("\u00A0", "\u202F", "\u2009", " ", "\t", "\n", "\r"):
+        s = s.replace(ch, "")
+    s = "".join(c for c in s if c.isalnum())
+    return s
+
+
+def _to_int_loose(v) -> int:
+    if v is None:
+        return 0
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    if isinstance(v, Decimal):
+        return int(v)
+    txt = str(v).strip()
+    if not txt:
+        return 0
+    txt = strip_space_digits(txt)
+    txt = txt.replace(",", "")
+    try:
+        return int(txt)
+    except Exception:
+        try:
+            return int(float(txt))
+        except Exception:
+            return 0
+
+
+def _resolve_columns(
+    header: list[str],
+    required: dict[str, list[str]],
+    optional: dict[str, list[str]] | None = None,
+    *,
+    fuzzy_threshold: float = 0.86,
+):
+    optional = optional or {}
+
+    norm_to_orig: dict[str, str] = {}
+    for h in header:
+        n = _norm_col_name(h)
+        if n and n not in norm_to_orig:
+            norm_to_orig[n] = h
+
+    def candidates_for(canon: str) -> list[str]:
+        alts = [canon] + list(required.get(canon, [])) + list(optional.get(canon, []))
+        seen = set()
+        out = []
+        for a in alts:
+            n = _norm_col_name(a)
+            if n and n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out
+
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    all_norm_headers = list(norm_to_orig.keys())
+
+    for canon in required.keys():
+        found = None
+        for alt_norm in candidates_for(canon):
+            if alt_norm in norm_to_orig:
+                found = norm_to_orig[alt_norm]
+                break
+        if found is None and all_norm_headers:
+            best_norm = None
+            best_score = 0.0
+            acceptable = candidates_for(canon)
+            for hn in all_norm_headers:
+                for an in acceptable:
+                    sc = difflib.SequenceMatcher(a=hn, b=an).ratio()
+                    if sc > best_score:
+                        best_score = sc
+                        best_norm = hn
+            if best_norm is not None and best_score >= fuzzy_threshold:
+                found = norm_to_orig[best_norm]
+        if found is None:
+            missing.append(canon)
+        else:
+            resolved[canon] = found
+
+    for canon in optional.keys():
+        for alt_norm in candidates_for(canon):
+            if alt_norm in norm_to_orig:
+                resolved[canon] = norm_to_orig[alt_norm]
+                break
+
+    if missing:
+        avail = [h for h in header if (h or "").strip()]
+        suggestions = {}
+        for canon in missing:
+            expected_norms = candidates_for(canon)
+            pairs = []
+            for h in avail:
+                hn = _norm_col_name(h)
+                if not hn:
+                    continue
+                best = max((difflib.SequenceMatcher(a=hn, b=en).ratio() for en in expected_norms), default=0.0)
+                pairs.append((best, h))
+            pairs.sort(reverse=True)
+            suggestions[canon] = [h for sc, h in pairs[:5] if sc >= 0.55]
+
+        msg_lines = [
+            f"Missing required columns: {missing}.",
+            f"Found columns: {avail}",
+        ]
+        for canon in missing:
+            if suggestions.get(canon):
+                msg_lines.append(f"Suggestions for '{canon}': {suggestions[canon]}")
+        raise ValueError("\n".join(msg_lines))
+
+    return resolved
+
+
+_UNO_REQUIRED_SYNONYMS = {
+    "TYPE": ["type", "typ", "assettype", "вид", "тип"],
+    "TICKER": ["ticker", "symbol", "security", "sec", "тикер", "тик", "бумага", "инструмент"],
+    "DATE": ["date", "dt", "trade_date", "дата", "датасделки", "дата сделки"],
+    "VOLUME": ["volume", "qty", "quantity", "amount", "count", "количество", "колво", "кол-во", "шт", "units"],
+    "PRICE": ["price", "px", "rate", "цена", "курс"],
+}
+
+
+_UNO_OPTIONAL_SYNONYMS = {
+    COMM_COL: ["commission", "fee", "comm", "комиссия", "сбор"],
+    MKT_COL: ["marketboard", "market", "board", "market_board", "площадка", "режим", "mode", "рынок"],
+}
 
 # --- PRICE PARSER (preserve fractional length) ---
 PRICE_RE = re.compile(r"""
@@ -219,14 +368,9 @@ def _read_trades_xlsx(path: Path):
 
     header_cells = next(ws.iter_rows(min_row=1, max_row=1), [])
     header = [(str(c.value).strip() if c.value is not None else "") for c in header_cells]
-    header_set = set(header)
-
-    missing = [c for c in IN_COLS if c not in header_set]
-    if missing:
-        raise ValueError(f"Missing columns: {missing}. Found: {header}")
-
-    has_commission = COMM_COL in header_set
-    has_marketboard = MKT_COL in header_set
+    col_map = _resolve_columns(header, _UNO_REQUIRED_SYNONYMS, _UNO_OPTIONAL_SYNONYMS)
+    has_commission = COMM_COL in col_map
+    has_marketboard = MKT_COL in col_map
 
     idx = {name: header.index(name) for name in header if name}
     rows = []
@@ -235,8 +379,9 @@ def _read_trades_xlsx(path: Path):
         if not row_cells or all(c.value is None or str(c.value).strip() == "" for c in row_cells):
             continue
 
-        def cell(name: str):
-            j = idx.get(name)
+        def cell(canon: str):
+            name = col_map.get(canon)
+            j = idx.get(name) if name else None
             return row_cells[j] if j is not None and j < len(row_cells) else None
 
         type_cell = cell("TYPE")
@@ -257,10 +402,7 @@ def _read_trades_xlsx(path: Path):
 
         # VOLUME
         vol_v = vol_cell.value if vol_cell else 0
-        try:
-            vol = int(vol_v)
-        except Exception:
-            vol = int((str(vol_v).strip() or "0"))
+        vol = _to_int_loose(vol_v)
 
         # PRICE
         price_v = price_cell.value if price_cell else ""
@@ -319,26 +461,29 @@ def read_trades(path: Path):
     has_marketboard = False
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f, delimiter=delim)
-        missing = [c for c in IN_COLS if c not in (reader.fieldnames or [])]
-        if missing:
-            raise ValueError(f"Missing columns: {missing}. Found: {reader.fieldnames}")
-        has_commission = COMM_COL in (reader.fieldnames or [])
-        has_marketboard = MKT_COL in (reader.fieldnames or [])
+        header = [h or "" for h in (reader.fieldnames or [])]
+        col_map = _resolve_columns(header, _UNO_REQUIRED_SYNONYMS, _UNO_OPTIONAL_SYNONYMS)
+        has_commission = COMM_COL in col_map
+        has_marketboard = MKT_COL in col_map
         for i, r in enumerate(reader):
-            p_dec, p_str, frac_len = parse_price_keep_format(r["PRICE"])
+            def get(canon: str) -> str:
+                name = col_map.get(canon)
+                return (r.get(name, "") if name else "")
+
+            p_dec, p_str, frac_len = parse_price_keep_format(get("PRICE"))
             c_dec = c_str = None
             c_shown = ""
             c_frac = 0
             if has_commission:
-                raw_c = (r.get(COMM_COL) or "").strip()
+                raw_c = (get(COMM_COL) or "").strip()
                 if raw_c:
                     c_dec, c_shown, c_frac = parse_price_keep_format(raw_c)
-            mb = (r.get(MKT_COL) or "").strip() if has_marketboard else ""
+            mb = (get(MKT_COL) or "").strip() if has_marketboard else ""
             rows.append({
-                "TYPE": (r["TYPE"] or "").strip(),
-                "TICKER": (r["TICKER"] or "").strip(),
-                "DATE": parse_date(r["DATE"]),
-                "VOLUME": int((r["VOLUME"] or "0").strip()),
+                "TYPE": (get("TYPE") or "").strip(),
+                "TICKER": (get("TICKER") or "").strip(),
+                "DATE": parse_date(get("DATE")),
+                "VOLUME": _to_int_loose(get("VOLUME")),
                 "PRICE_DEC": p_dec,
                 "PRICE_STR": p_str,
                 "PRICE_FRAC": frac_len,
