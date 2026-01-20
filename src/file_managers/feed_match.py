@@ -1,6 +1,4 @@
-
-#python3
-# -*- coding: utf-8 -*-
+"""Helpers for converting broker exports into the internal trade format."""
 
 import csv
 import difflib
@@ -18,10 +16,6 @@ DATE_FMT = "%d.%m.%Y"
 
 
 def _try_parse_date_multi(s: str):
-	"""Parse a date from multiple common formats.
-
-	Primary format stays dd.mm.yyyy, but accepts a few common alternatives.
-	"""
 	txt = (s or "").strip()
 	if not txt:
 		raise ValueError("empty date")
@@ -30,7 +24,7 @@ def _try_parse_date_multi(s: str):
 			return datetime.strptime(txt, fmt).date()
 		except Exception:
 			pass
-	# last resort: let datetime parse ISO-ish with time part, if present
+
 	try:
 		return datetime.fromisoformat(txt.replace("Z", "+00:00")).date()
 	except Exception:
@@ -43,20 +37,18 @@ def parse_date(s: str):
 
 
 def _norm_col_name(name: str) -> str:
-	"""Normalize header names for matching: casefold, remove spaces/punct/underscores."""
 	if name is None:
 		return ""
 	s = str(name).strip().casefold()
-	# normalize common separators
+
 	for ch in ("\u00A0", "\u202F", "\u2009", " ", "\t", "\n", "\r"):
 		s = s.replace(ch, "")
-	# keep only alnum (supports Cyrillic letters via isalnum())
+
 	s = "".join(c for c in s if c.isalnum())
 	return s
 
 
 def _to_int_loose(v) -> int:
-	"""Parse int from inputs like '1 000', '1,000', '1000.0', None."""
 	if v is None:
 		return 0
 	if isinstance(v, bool):
@@ -70,9 +62,9 @@ def _to_int_loose(v) -> int:
 	txt = str(v).strip()
 	if not txt:
 		return 0
-	# remove spaces and thin spaces
+
 	txt = strip_space_digits(txt)
-	# allow comma as thousands separator; also allow trailing .0
+
 	txt = txt.replace(",", "")
 	try:
 		return int(txt)
@@ -84,20 +76,14 @@ def _to_int_loose(v) -> int:
 
 
 def _resolve_columns(
-	header: list[str],
-	required: dict[str, list[str]],
-	optional: dict[str, list[str]] | None = None,
-	*,
-	fuzzy_threshold: float = 0.86,
+ header: list[str],
+ required: dict[str, list[str]],
+ optional: dict[str, list[str]] | None = None,
+ *,
+ fuzzy_threshold: float = 0.86,
 ):
-	"""Resolve actual column names in an input header to canonical names.
-
-	- Matches case-insensitively and ignores spaces/underscores/punctuation.
-	- Accepts synonyms.
-	- Uses fuzzy matching if no direct match is found.
-	"""
 	optional = optional or {}
-	# map normalized header -> original header (first occurrence wins)
+
 	norm_to_orig: dict[str, str] = {}
 	for h in header:
 		n = _norm_col_name(h)
@@ -106,7 +92,7 @@ def _resolve_columns(
 
 	def candidates_for(canon: str) -> list[str]:
 		alts = [canon] + list(required.get(canon, [])) + list(optional.get(canon, []))
-		# normalize alternatives too
+
 		seen = set()
 		out = []
 		for a in alts:
@@ -121,17 +107,17 @@ def _resolve_columns(
 
 	all_norm_headers = list(norm_to_orig.keys())
 	for canon, syns in required.items():
-		# 1) direct match on canonical or any synonym
+
 		found = None
 		for alt_norm in candidates_for(canon):
 			if alt_norm in norm_to_orig:
 				found = norm_to_orig[alt_norm]
 				break
-		# 2) fuzzy match if still not found
+
 		if found is None and all_norm_headers:
 			best_norm = None
 			best_score = 0.0
-			# compare each header against all acceptable variants, take best overall
+
 			acceptable = candidates_for(canon)
 			for hn in all_norm_headers:
 				for an in acceptable:
@@ -146,7 +132,7 @@ def _resolve_columns(
 		else:
 			resolved[canon] = found
 
-	# Optional columns: only resolve if present
+
 	for canon, syns in optional.items():
 		for alt_norm in candidates_for(canon):
 			if alt_norm in norm_to_orig:
@@ -154,13 +140,13 @@ def _resolve_columns(
 				break
 
 	if missing:
-		# Build a helpful message with suggestions
+
 		avail = [h for h in header if (h or "").strip()]
 		suggestions = {}
 		for canon in missing:
-			# suggest close header names from available
+
 			expected_norms = candidates_for(canon)
-			# use difflib against original headers (normalized)
+
 			pairs = []
 			for h in avail:
 				hn = _norm_col_name(h)
@@ -172,8 +158,8 @@ def _resolve_columns(
 			suggestions[canon] = [h for sc, h in pairs[:5] if sc >= 0.55]
 
 		msg_lines = [
-			f"Missing required columns: {missing}.",
-			f"Found columns: {avail}",
+		 f"Missing required columns: {missing}.",
+		 f"Found columns: {avail}",
 		]
 		for canon in missing:
 			if suggestions.get(canon):
@@ -183,26 +169,26 @@ def _resolve_columns(
 	return resolved
 
 
-# --- PRICE PARSER (compatible with fifo_match; keeps fractional length) ---
+
 PRICE_RE = re.compile(
-	r"""
+ r"""
 	^\s*
 	(?P<sign>[+-]?)\s*
 	(?P<int>[0-9\u00A0\u202F\u2009\s]*[0-9])?
 	(?:[,.](?P<frac>[0-9]+))?
 	.*?$
 """,
-	re.X,
+ re.X,
 )
 
 
 def strip_space_digits(s: str) -> str:
 	return (
-		(s or "")
-		.replace("\u00A0", "")
-		.replace("\u202F", "")
-		.replace("\u2009", "")
-		.replace(" ", "")
+	 (s or "")
+	 .replace("\u00A0", "")
+	 .replace("\u202F", "")
+	 .replace("\u2009", "")
+	 .replace(" ", "")
 	)
 
 
@@ -216,23 +202,16 @@ def group_thousands(int_digits: str) -> str:
 
 
 def parse_price_keep_format(raw: str):
-	"""-> (Decimal value, printable_string_with_₽, frac_len)
-
-	Accepts inputs like:
-	- 123.45
-	- 123,45
-	- '1 234,50 ₽'
-	"""
 	txt = (raw or "").strip()
-	# strip common currency markers
+
 	txt = (
-		txt.replace("руб.", "")
-		.replace("р.", "")
-		.replace("₽", "")
-		.replace("$", "")
-		.replace("€", "")
-		.replace("£", "")
-		.replace("¥", "")
+	 txt.replace("руб.", "")
+	 .replace("р.", "")
+	 .replace("₽", "")
+	 .replace("$", "")
+	 .replace("€", "")
+	 .replace("£", "")
+	 .replace("¥", "")
 	)
 	m = PRICE_RE.match(txt)
 	if not m:
@@ -264,7 +243,6 @@ def parse_price_keep_format(raw: str):
 
 
 def format_num_for_csv(dec: Decimal | None, frac_len: int) -> str:
-	"""Number string for CSV: dot decimal separator, exactly frac_len digits."""
 	if dec is None:
 		return ""
 	frac_len = int(frac_len or 0)
@@ -293,24 +271,24 @@ def sniff_delimiter(path: Path) -> str:
 	return best
 
 
-# INOUT headers that may appear
+
 MKT_COL = "MARKETBOARD"
 INOUT_BASE_COLS = ["TYPE", "TICKER", "VOLUME", "DATE_BUY", "PRICE_BUY", "DATE_SELL", "PRICE_SELL"]
 
 
 _INOUT_REQUIRED_SYNONYMS = {
-	"TYPE": ["type", "typ", "assettype", "вид", "тип"],
-	"TICKER": ["ticker", "symbol", "security", "sec", "тикер", "тик", "бумага", "инструмент"],
-	"VOLUME": ["volume", "qty", "quantity", "amount", "count", "количество", "колво", "кол-во", "шт", "units"],
-	"DATE_BUY": ["datebuy", "buydate", "buy_date", "date_buy", "datepurchase", "purchasedate", "датыпокупки", "датапокупки", "дата покупки", "дата_покупки"],
-	"PRICE_BUY": ["pricebuy", "buyprice", "buy_price", "price_buy", "purchaseprice", "buy", "цена покупки", "ценапокупки", "цена_покупки"],
-	"DATE_SELL": ["datesell", "selldate", "sell_date", "date_sell", "datesale", "saledate", "датапродажи", "дата продажи", "дата_продажи"],
-	"PRICE_SELL": ["pricesell", "sellprice", "sell_price", "price_sell", "saleprice", "sell", "цена продажи", "ценапродажи", "цена_продажи"],
+ "TYPE": ["type", "typ", "assettype", "вид", "тип"],
+ "TICKER": ["ticker", "symbol", "security", "sec", "тикер", "тик", "бумага", "инструмент"],
+ "VOLUME": ["volume", "qty", "quantity", "amount", "count", "количество", "колво", "кол-во", "шт", "units"],
+ "DATE_BUY": ["datebuy", "buydate", "buy_date", "date_buy", "datepurchase", "purchasedate", "датыпокупки", "датапокупки", "дата покупки", "дата_покупки"],
+ "PRICE_BUY": ["pricebuy", "buyprice", "buy_price", "price_buy", "purchaseprice", "buy", "цена покупки", "ценапокупки", "цена_покупки"],
+ "DATE_SELL": ["datesell", "selldate", "sell_date", "date_sell", "datesale", "saledate", "датапродажи", "дата продажи", "дата_продажи"],
+ "PRICE_SELL": ["pricesell", "sellprice", "sell_price", "price_sell", "saleprice", "sell", "цена продажи", "ценапродажи", "цена_продажи"],
 }
 
 
 _INOUT_OPTIONAL_SYNONYMS = {
-	MKT_COL: ["marketboard", "market", "board", "market_board", "площадка", "режим", "mode", "рынок"],
+ MKT_COL: ["marketboard", "market", "board", "market_board", "площадка", "режим", "mode", "рынок"],
 }
 
 
@@ -341,17 +319,17 @@ def _read_inout_csv(path: Path):
 				name = col_map.get(canon)
 				return _normalize_str(r.get(name, "")) if name else ""
 			rows.append(
-				{
-					"MARKETBOARD": get(MKT_COL) if with_board else "",
-					"TYPE": get("TYPE"),
-					"TICKER": get("TICKER"),
-					"VOLUME": _to_int_loose(get("VOLUME")),
-					"DATE_BUY": get("DATE_BUY"),
-					"PRICE_BUY": get("PRICE_BUY"),
-					"DATE_SELL": get("DATE_SELL"),
-					"PRICE_SELL": get("PRICE_SELL"),
-					"_ord": i,
-				}
+			 {
+			  "MARKETBOARD": get(MKT_COL) if with_board else "",
+			  "TYPE": get("TYPE"),
+			  "TICKER": get("TICKER"),
+			  "VOLUME": _to_int_loose(get("VOLUME")),
+			  "DATE_BUY": get("DATE_BUY"),
+			  "PRICE_BUY": get("PRICE_BUY"),
+			  "DATE_SELL": get("DATE_SELL"),
+			  "PRICE_SELL": get("PRICE_SELL"),
+			  "_ord": i,
+			 }
 			)
 	return rows, with_board
 
@@ -385,7 +363,7 @@ def _read_inout_xlsx(path: Path):
 			v = row[j]
 			if v is None:
 				return ""
-			# Excel may keep dates and numbers as native types
+
 			if isinstance(v, (int, float, Decimal)):
 				return str(v)
 			if hasattr(v, "strftime"):
@@ -397,17 +375,17 @@ def _read_inout_xlsx(path: Path):
 
 		vol_raw = get("VOLUME")
 		rows.append(
-			{
-				"MARKETBOARD": _normalize_str(get(MKT_COL)) if with_board else "",
-				"TYPE": _normalize_str(get("TYPE")),
-				"TICKER": _normalize_str(get("TICKER")),
-				"VOLUME": _to_int_loose(vol_raw),
-				"DATE_BUY": _normalize_str(get("DATE_BUY")),
-				"PRICE_BUY": _normalize_str(get("PRICE_BUY")),
-				"DATE_SELL": _normalize_str(get("DATE_SELL")),
-				"PRICE_SELL": _normalize_str(get("PRICE_SELL")),
-				"_ord": i,
-			}
+		 {
+		  "MARKETBOARD": _normalize_str(get(MKT_COL)) if with_board else "",
+		  "TYPE": _normalize_str(get("TYPE")),
+		  "TICKER": _normalize_str(get("TICKER")),
+		  "VOLUME": _to_int_loose(vol_raw),
+		  "DATE_BUY": _normalize_str(get("DATE_BUY")),
+		  "PRICE_BUY": _normalize_str(get("PRICE_BUY")),
+		  "DATE_SELL": _normalize_str(get("DATE_SELL")),
+		  "PRICE_SELL": _normalize_str(get("PRICE_SELL")),
+		  "_ord": i,
+		 }
 		)
 	return rows, with_board
 
@@ -422,7 +400,6 @@ def read_inout(path: Path):
 
 
 def inout_to_uno(inout_rows: list[dict], with_board: bool):
-	"""Convert INOUT rows into UNO trades, aggregating by (ticker, date, price) separately for buys and sells."""
 	agg_qty = defaultdict(int)
 	agg_frac = defaultdict(int)
 	keep_type = {}
@@ -448,32 +425,32 @@ def inout_to_uno(inout_rows: list[dict], with_board: bool):
 		if vol == 0:
 			continue
 
-		# Buy leg
+
 		add_trade(marketboard, typ, ticker, r.get("DATE_BUY", ""), r.get("PRICE_BUY", ""), +vol)
-		# Sell leg
+
 		add_trade(marketboard, typ, ticker, r.get("DATE_SELL", ""), r.get("PRICE_SELL", ""), -vol)
 
-	# Build output rows
+
 	out = []
 	for key, qty in agg_qty.items():
 		if qty == 0:
 			continue
-		# Ensure date is valid-ish; keep as provided, but normalize if possible
+
 		date_txt = key.date
 		try:
 			date_txt = parse_date(date_txt).strftime(DATE_FMT)
 		except Exception:
 			pass
 		out.append(
-			{
-				"MARKETBOARD": keep_board.get(key, ""),
-				"TYPE": keep_type.get(key, key.type_),
-				"TICKER": keep_ticker.get(key, key.ticker),
-				"DATE": date_txt,
-				"VOLUME": int(qty),
-				"PRICE_DEC": key.price_dec,
-				"PRICE_FRAC": agg_frac.get(key, 0),
-			}
+		 {
+		  "MARKETBOARD": keep_board.get(key, ""),
+		  "TYPE": keep_type.get(key, key.type_),
+		  "TICKER": keep_ticker.get(key, key.ticker),
+		  "DATE": date_txt,
+		  "VOLUME": int(qty),
+		  "PRICE_DEC": key.price_dec,
+		  "PRICE_FRAC": agg_frac.get(key, 0),
+		 }
 		)
 
 	def sort_key(r):
@@ -481,14 +458,14 @@ def inout_to_uno(inout_rows: list[dict], with_board: bool):
 			d = parse_date(r.get("DATE", ""))
 		except Exception:
 			d = datetime.max.date()
-		# buys before sells on the same date+price
+
 		side_rank = 0 if int(r.get("VOLUME", 0)) > 0 else 1
 		return (
-			d,
-			r.get("TICKER", ""),
-			r.get("MARKETBOARD", "") if with_board else "",
-			r.get("PRICE_DEC"),
-			side_rank,
+		 d,
+		 r.get("TICKER", ""),
+		 r.get("MARKETBOARD", "") if with_board else "",
+		 r.get("PRICE_DEC"),
+		 side_rank,
 		)
 
 	out.sort(key=sort_key)
@@ -523,7 +500,7 @@ def write_uno_xlsx(rows: list[dict], out_path: Path, with_board: bool):
 
 	wb = Workbook()
 	ws = wb.active
-	ws.title = "UNO"
+	ws.title = "ONES"
 	ws.append(header)
 
 	for r in rows:
@@ -533,7 +510,7 @@ def write_uno_xlsx(rows: list[dict], out_path: Path, with_board: bool):
 		else:
 			ws.append([r.get("TYPE", ""), r.get("TICKER", ""), r.get("DATE", ""), int(r.get("VOLUME", 0) or 0), price_dec])
 
-	# Apply per-row numeric format to PRICE column based on stored fractional length
+
 	price_col = 6 if with_board else 5
 	for i in range(2, len(rows) + 2):
 		frac = int(rows[i - 2].get("PRICE_FRAC", 0) or 0)
@@ -580,8 +557,8 @@ def main():
 	else:
 		print("Specify file paths.")
 		print("Supported formats: input .csv/.tsv/.xlsx, output .csv/.xlsx")
-		inp = _ask_path("INPUT INOUT file: ")
-		outp = _ask_path("OUTPUT UNO file: ")
+		inp = _ask_path("INPUT TWOS (INOUT) file: ")
+		outp = _ask_path("OUTPUT ONES (UNO) file: ")
 		if not str(inp).strip() or not str(outp).strip():
 			print("Empty path. Usage:\n  python feed_match.py INPUT.(csv|tsv|xlsx) OUTPUT.(csv|xlsx)")
 			sys.exit(1)
@@ -595,4 +572,12 @@ def main():
 
 if __name__ == "__main__":
 	main()
+
+
+
+read_twos = read_inout
+twos_to_ones = inout_to_uno
+write_ones_csv = write_uno_csv
+write_ones_xlsx = write_uno_xlsx
+write_ones = write_uno
 

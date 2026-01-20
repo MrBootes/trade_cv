@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Type checking / analysis
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Tools
+.ruff_cache/
+.pytest_cache/
+.tox/
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# Data exports / local inputs (keep private)
+*.csv
+*.xlsx
+*.xls
+*.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

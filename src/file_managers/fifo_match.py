@@ -1,4 +1,4 @@
-#python3
+
 # -*- coding: utf-8 -*-
 
 import csv, re
@@ -172,7 +172,7 @@ _UNO_OPTIONAL_SYNONYMS = {
     MKT_COL: ["marketboard", "market", "board", "market_board", "площадка", "режим", "mode", "рынок"],
 }
 
-# --- PRICE PARSER (preserve fractional length) ---
+
 PRICE_RE = re.compile(r"""
     ^\s*
     (?P<sign>[+-]?)\s*
@@ -193,10 +193,6 @@ def group_thousands(int_digits: str) -> str:
     return " ".join(reversed(out)) if out else "0"
 
 def parse_price_keep_format(raw: str):
-    """
-    -> (Decimal value, printable_string_with_<currency>, frac_len)
-    no rounding, frac_len = number of digits after decimal point in input
-    """
     txt = (raw or "").replace("руб.", "").replace("р.", "").replace("₽", "").replace(" ", "")
     txt = txt.replace("$", "").replace("€", "").replace("£", "").replace("¥", "").replace("usd", "")
     txt = txt.replace("eur", "").replace("gbp", "").replace("jpy", "").strip()
@@ -205,7 +201,7 @@ def parse_price_keep_format(raw: str):
         raise ValueError(f"invalid price: '{raw}'")
     sign = m.group("sign") or ""
     int_part = strip_space_digits(m.group("int") or "0")
-    frac_part = m.group("frac")  # can be None
+    frac_part = m.group("frac")
     if not int_part.isdigit():
         raise ValueError(f"invalid integer part of price: '{raw}'")
 
@@ -229,12 +225,11 @@ def parse_price_keep_format(raw: str):
     return dec_val, shown, frac_len
 
 def format_money_shown(dec: Decimal | None, frac_len: int) -> str:
-    """Format Decimal as a readable money string with ₽, preserving frac_len."""
     if dec is None:
         return ""
     sign = "-" if dec < 0 else ""
     dec_abs = -dec if dec < 0 else dec
-    # Build exact string with requested fractional digits
+
     if frac_len <= 0:
         q = Decimal('1')
         s = f"{dec_abs.quantize(q)}"
@@ -255,7 +250,6 @@ def format_money_shown(dec: Decimal | None, frac_len: int) -> str:
     return sign + shown
 
 def money_for_qty(unit_dec: Decimal | None, frac_len: int, qty: int):
-    """Compute money amount for qty using per-unit commission, preserving frac_len."""
     if unit_dec is None:
         return None, "", 0
     frac_len = int(frac_len or 0)
@@ -264,13 +258,12 @@ def money_for_qty(unit_dec: Decimal | None, frac_len: int, qty: int):
     return amt, format_money_shown(amt, frac_len), frac_len
 
 def format_num_for_csv(dec: Decimal | None, frac_len: int) -> str:
-    """Number as text for CSV: no symbols/spaces, with exactly frac_len digits."""
     if dec is None:
         return ""
-    # Format using quantize, but in CSV this will remain a number-text
+
     if frac_len <= 0:
         return f"{dec.quantize(Decimal('1'))}"
-    q = Decimal(1).scaleb(-frac_len)  # 10^-frac_len
+    q = Decimal(1).scaleb(-frac_len)
     return f"{dec.quantize(q)}"
 
 @dataclass
@@ -327,7 +320,6 @@ _XLSX_DEC_RE = re.compile(r"\.(?P<digits>[0#]+)")
 
 
 def _excel_frac_len(fmt: str) -> int:
-    """Best-effort: infer decimal digits from Excel number format like '#,##0.00'."""
     if not fmt:
         return 0
     m = _XLSX_DEC_RE.search(str(fmt))
@@ -337,7 +329,6 @@ def _excel_frac_len(fmt: str) -> int:
 
 
 def _excel_number_to_money(value, frac_len: int):
-    """Convert Excel numeric (int/float/Decimal) to (Decimal, shown_str, frac_len)."""
     if value is None or value == "":
         raise ValueError("empty numeric value")
     if isinstance(value, Decimal):
@@ -345,7 +336,7 @@ def _excel_number_to_money(value, frac_len: int):
     elif isinstance(value, int):
         dec_val = Decimal(value)
     elif isinstance(value, float):
-        # avoid binary float artifacts as much as possible
+
         dec_val = Decimal(str(value))
     else:
         return parse_price_keep_format(str(value))
@@ -357,7 +348,6 @@ def _excel_number_to_money(value, frac_len: int):
 
 
 def _read_trades_xlsx(path: Path):
-    """Read UNO trades from .xlsx (active sheet)."""
     try:
         from openpyxl import load_workbook
     except Exception as e:
@@ -393,18 +383,18 @@ def _read_trades_xlsx(path: Path):
         typ = (str(type_cell.value).strip() if type_cell and type_cell.value is not None else "")
         ticker = (str(tick_cell.value).strip() if tick_cell and tick_cell.value is not None else "")
 
-        # DATE: allow native Excel date/datetime or text dd.mm.yyyy
+
         date_v = date_cell.value if date_cell else ""
         if hasattr(date_v, "year") and hasattr(date_v, "month") and hasattr(date_v, "day"):
             dt = date_v.date() if hasattr(date_v, "date") else date_v
         else:
             dt = parse_date(str(date_v))
 
-        # VOLUME
+
         vol_v = vol_cell.value if vol_cell else 0
         vol = _to_int_loose(vol_v)
 
-        # PRICE
+
         price_v = price_cell.value if price_cell else ""
         if isinstance(price_v, (int, float, Decimal)):
             pf = _excel_frac_len(getattr(price_cell, "number_format", ""))
@@ -412,7 +402,7 @@ def _read_trades_xlsx(path: Path):
         else:
             p_dec, p_str, p_frac = parse_price_keep_format(str(price_v))
 
-        # COMMISSION (optional)
+
         c_dec = c_str = None
         c_shown = ""
         c_frac = 0
@@ -575,7 +565,7 @@ def fifo_match(rows, has_commission: bool = False, has_marketboard: bool = False
                                    None, "", 0,
                                    sc_dec, sc_str, sc_frac))
 
-    # Aggregation
+
     agg_vol = defaultdict(int)
     agg_bc = defaultdict(lambda: Decimal('0'))
     agg_sc = defaultdict(lambda: Decimal('0'))
@@ -620,7 +610,7 @@ def fifo_match(rows, has_commission: bool = False, has_marketboard: bool = False
             "SELL_COMM_FRAC": sc_frac,
         })
 
-    # Sort output
+
     def d(x): return datetime.strptime(x, DATE_FMT).date() if x else datetime.max.date()
     out_rows.sort(key=lambda r: (r["TICKER"], r.get("MARKETBOARD", ""), d(r["DATE_BUY"]), d(r["DATE_SELL"]), r["VOLUME"]))
 
@@ -629,10 +619,10 @@ def fifo_match(rows, has_commission: bool = False, has_marketboard: bool = False
         base = {
             "TYPE": r["TYPE"], "TICKER": r["TICKER"], "VOLUME": r["VOLUME"],
             "DATE_BUY": r["DATE_BUY"],
-            "PRICE_BUY": r["PRICE_BUY_STR"],      # for console (pretty, with ₽)
+            "PRICE_BUY": r["PRICE_BUY_STR"],
             "DATE_SELL": r["DATE_SELL"],
-            "PRICE_SELL": r["PRICE_SELL_STR"],    # for console
-            # for recording file:
+            "PRICE_SELL": r["PRICE_SELL_STR"],
+
             "_PB_NUM": r["PRICE_BUY_NUM"], "_PB_FRAC": r["PRICE_BUY_FRAC"],
             "_PS_NUM": r["PRICE_SELL_NUM"], "_PS_FRAC": r["PRICE_SELL_FRAC"],
         }
@@ -648,10 +638,10 @@ def fifo_match(rows, has_commission: bool = False, has_marketboard: bool = False
         flat.append(base)
     return flat
 
-# --- writing files ---
+
 
 def write_csv_numeric_money(rows, out_path: Path):
-    # In CSV, write numbers without currency signs/spaces and without quotes; decimal point; preserve number of digits.
+
     with out_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f, delimiter=",", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
         with_comm = bool(rows and ("_BC_NUM" in rows[0] or "_SC_NUM" in rows[0]))
