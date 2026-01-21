@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import re
 import sys
+from typing import Optional
 from difflib import get_close_matches
 from dateutil import parser as date_parser
 
@@ -13,6 +14,54 @@ _RE_WS = re.compile(r'\s+')
 _RE_DATE_SEP = re.compile(r'\d+\s*[/.-]\s*\d+\s*[/.-]\s*\d+')
 _RE_YMD = re.compile(r'\d{4}[-/.]\d{1,2}[-/.]\d{1,2}')
 _RE_HAS_LETTERS = re.compile(r'[A-Za-zА-Яа-я]{3,}')
+
+
+def _detect_and_split_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Detect if dataframe needs column splitting (single column with separators)."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return df
+
+    if len(df.columns) != 1:
+        return df
+
+    first_col = df.columns[0]
+    sample_value = str(df[first_col].iloc[0]) if len(df) > 0 else ""
+
+    for sep in [';', '\t', '|', ',']:
+        if sep in sample_value or sep in str(first_col):
+            print(f"  Detected separator '{sep}' in data, re-parsing...")
+            from io import StringIO
+            csv_string = df.to_csv(index=False, sep=',')
+            try:
+                new_df = pd.read_csv(StringIO(csv_string.replace(',', sep)), sep=sep)
+                if len(new_df.columns) > 1:
+                    return new_df
+            except Exception:
+                pass
+
+    return df
+
+
+def read_input_file(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
+    """Read an input file (Excel/CSV) into a DataFrame."""
+    if not file_path or not isinstance(file_path, str):
+        raise ValueError("file_path must be a non-empty string")
+
+    file_extension = os.path.splitext(file_path)[1].lower()
+
+    if file_extension in {".xlsx", ".xls"}:
+        if sheet_name is None:
+            df = pd.read_excel(file_path)
+        else:
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
+        return _detect_and_split_columns(df)
+
+    if file_extension == ".csv":
+        return pd.read_csv(file_path, sep=None, engine="python")
+
+    raise ValueError(
+        f"Unsupported file format: {file_extension}. Use .xlsx, .xls, or .csv"
+    )
 
 
 def _excel_col_letter(idx):
@@ -1578,8 +1627,6 @@ def find_matching_column(df, target_columns, aliases=None, interactive=True):
 
 
 def read_trade_data(file_path, number_format=None, custom_column_names=None, sheet_name=None, *, interactive=True):
-    from loaders.load_file import read_input_file
-
     df = read_input_file(file_path, sheet_name=sheet_name)
     return load_inout_from_df(
         df,

@@ -12,8 +12,7 @@ import time
 import pandas as pd
 from openpyxl import load_workbook
 
-from loaders.load_file import read_input_file
-from loaders.load_validate import identify_trade_type
+from loaders.load_validate import identify_trade_type, read_input_file
 
 
 def _normalize_mode(mode: str | None) -> str | None:

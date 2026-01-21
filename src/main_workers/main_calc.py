@@ -382,9 +382,6 @@ def calc_main(loaded_data, start_key=None, end_key=None):
     range_start = START_DATE
     range_end_excl = END_DATE + timedelta(days=1)
 
-
-
-
     open_missing_buy_is_short = True
     open_missing_sell_is_long = True
 
@@ -437,10 +434,6 @@ def calc_main(loaded_data, start_key=None, end_key=None):
             buy_cost = None
         if isinstance(sell_cost, float) and np.isnan(sell_cost):
             sell_cost = None
-
-
-
-
 
 
         if date_buy is None and date_sell is None:
