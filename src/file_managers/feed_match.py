@@ -1,5 +1,3 @@
-"""Helpers for converting broker exports into the internal trade format."""
-
 import csv
 import difflib
 import re

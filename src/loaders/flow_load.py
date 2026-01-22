@@ -48,7 +48,6 @@ def _norm_name(s: str) -> str:
 
 
 def _find_candidates(df: pd.DataFrame, target: str, aliases: dict) -> List[str]:
-	"""Return all df columns matching target or its aliases (case/format-insensitive)."""
 	if df is None or not isinstance(df, pd.DataFrame):
 		return []
 	all_aliases = [target] + list(aliases.get(target, []) or [])
@@ -109,7 +108,6 @@ def _validate_flow_rows(data: dict) -> None:
 
 
 def _validate_flow_pairs(data: dict, *, interactive: bool) -> None:
-	"""Validate that date and cash are either both present or both missing."""
 	dates = _pad_to_length(data.get('date', []), 0)
 	cash = _pad_to_length(data.get('cash', []), 0)
 	n = max(len(dates), len(cash))
@@ -163,7 +161,6 @@ def _validate_flow_pairs(data: dict, *, interactive: bool) -> None:
 
 
 def _validate_flow_has_any_complete_row(data: dict, *, interactive: bool) -> None:
-	"""Ensure there is at least one usable FLOW row (both date and cash present)."""
 	dates = _pad_to_length(data.get('date', []), 0)
 	cash = _pad_to_length(data.get('cash', []), 0)
 	n = max(len(dates), len(cash))
@@ -212,7 +209,6 @@ def _validate_date_cash_lengths(data: dict) -> None:
 
 
 def _sort_flow_rows(data: dict) -> dict:
-	"""Sort by date (stable), without changing row count."""
 	cols = ['date', 'cash']
 	values = {}
 	for c in cols:
@@ -272,7 +268,6 @@ def read_trade_data(
  df: Optional[pd.DataFrame] = None,
  interactive: bool = True,
 ):
-	"""Read cash flow data and return FLOW dict-of-lists: date + cash."""
 	try:
 		input_rows = None
 		if df is None:

@@ -74,7 +74,6 @@ def _canonicalize_marketboard(value) -> tuple[str | None, str | None]:
 
 
 def _apply_marketboard_rules_uno(data: dict, *, interactive: bool) -> dict:
-	"""Ensure `boards` exists and contains only allowed values."""
 	if not isinstance(data, dict):
 		return data
 
@@ -183,7 +182,6 @@ def _column_aliases_uno() -> dict:
 
 
 def _validate_uno_trade_events(data: dict) -> None:
-	"""Validate that each non-zero signed volume row has date+price."""
 	volume = data.get('volume_signed', [])
 	dates = data.get('date_trade', [])
 	prices = data.get('price_trade', [])
@@ -236,8 +234,6 @@ def _validate_uno_trade_events(data: dict) -> None:
 
 
 def _sort_uno_rows(data: dict) -> dict:
-	"""Sort UNO event rows without changing row count."""
-
 	visible_lists = [
 	 v for k, v in data.items()
 	 if not str(k).startswith('_') and isinstance(v, list) and len(v) > 0
@@ -299,7 +295,6 @@ def read_trade_data(
  df: Optional[pd.DataFrame] = None,
  interactive: bool = True,
 ):
-	"""Read trade data in UNO format and return UNO dict-of-lists (validate + sort only)."""
 	try:
 		input_rows = None
 		if df is None:

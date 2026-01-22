@@ -4,6 +4,7 @@ import atexit
 import base64
 import html
 import json
+import re
 import tempfile
 import threading
 import time
@@ -39,6 +40,294 @@ RESULT_FIELDS = (
  "types_volume_prices",
  "start_money",
 )
+
+
+_FREQ_LABELS: Tuple[str, str, str] = ("Daily", "Weekly", "Monthly")
+_FREQ_RESULT_INDICES = {0, 1, 4, 5, 6, 7, 8, 9, 11, 12}
+
+
+def _has_frequency_bundle(results: Any) -> bool:
+	if not isinstance(results, (list, tuple)):
+		return False
+	for i in _FREQ_RESULT_INDICES:
+		if i >= len(results):
+			continue
+		v = results[i]
+		if isinstance(v, (list, tuple)) and len(v) == 3:
+			return True
+	return False
+
+
+def _results_view(results: List[Any], freq_index: int) -> List[Any]:
+	fi = int(max(0, min(2, freq_index)))
+	out = list(results)
+	for i in _FREQ_RESULT_INDICES:
+		if i >= len(out):
+			continue
+		v = out[i]
+		if isinstance(v, (list, tuple)) and len(v) == 3:
+			out[i] = v[fi]
+	return out
+
+
+def _title_with_frequency(title: Any, freq_label: str) -> str:
+	base = str(title) if title is not None else ""
+	base = base.strip()
+	for fl in _FREQ_LABELS:
+		base = re.sub(r"\s*\(" + re.escape(fl) + r"\)\s*$", "", base)
+	if not base:
+		return f"{freq_label}"
+	return f"{base} ({freq_label})"
+
+
+def _trace_visible_value(tr: Any) -> Any:
+	try:
+		v = tr.visible
+		return True if v is None else v
+	except Exception:
+		return True
+
+
+def _build_frequency_switched_figure(
+	raw_builder: Callable[[List[Any], Optional[str]], go.Figure],
+	results: List[Any],
+	board: Optional[str],
+) -> go.Figure:
+	if not _has_frequency_bundle(results):
+		return raw_builder(results, board)
+
+	figs: List[go.Figure] = []
+	for fi in range(3):
+		out = raw_builder(_results_view(results, fi), board)
+		if not isinstance(out, go.Figure):
+			raise TypeError(f"Expected go.Figure from builder, got {type(out)}")
+		figs.append(out)
+
+	def _layout_meta_to_dict(fig: go.Figure) -> Dict[str, Any]:
+		try:
+			m = getattr(fig.layout, "meta", None)
+		except Exception:
+			m = None
+		out: Dict[str, Any] = {}
+		if m is None:
+			return out
+		try:
+			if isinstance(m, dict):
+				out.update(m)
+			elif hasattr(m, "to_plotly_json"):
+				mm = m.to_plotly_json()
+				if isinstance(mm, dict):
+					out.update(mm)
+			else:
+				out.update(dict(m))
+		except Exception:
+			return {}
+		return {k: v for k, v in out.items() if isinstance(k, str) and k.startswith("tc_") and k != "tc_freq_switch"}
+
+	n = len(figs[0].data)
+	if any(len(f.data) != n for f in figs):
+		return figs[0]
+
+	base = figs[0]
+	for fi in (1, 2):
+		base.add_traces(figs[fi].data)
+
+	for idx in range(n, 3 * n):
+		try:
+			base.data[idx].visible = False
+		except Exception:
+			pass
+
+	vis_states = []
+	for fi in range(3):
+		vis_states.append([_trace_visible_value(tr) for tr in figs[fi].data])
+	views_meta = []
+	for fi, label in enumerate(_FREQ_LABELS):
+		visible: List[Any] = [False] * (3 * n)
+		for j in range(n):
+			visible[fi * n + j] = vis_states[fi][j]
+		views_meta.append(
+			dict(
+				label=label,
+				visible=visible,
+				relayout={},
+			)
+		)
+
+	try:
+		existing_meta = getattr(base.layout, "meta", None)
+	except Exception:
+		existing_meta = None
+	meta_dict: Dict[str, Any] = {}
+	if existing_meta is not None:
+		try:
+			if isinstance(existing_meta, dict):
+				meta_dict.update(existing_meta)
+			elif hasattr(existing_meta, "to_plotly_json"):
+				m = existing_meta.to_plotly_json()
+				if isinstance(m, dict):
+					meta_dict.update(m)
+			else:
+				m = dict(existing_meta)
+				if isinstance(m, dict):
+					meta_dict.update(m)
+		except Exception:
+			pass
+	meta_dict["tc_freq_switch"] = {
+		"label": "Period:",
+		"default_index": 0,
+		"block_size": n,
+		"views": views_meta,
+	}
+	try:
+		per_period_meta = [_layout_meta_to_dict(f) for f in figs]
+		key_union: List[str] = sorted({k for md in per_period_meta for k in (md or {}).keys()})
+		meta_dict["tc_freq_period_meta"] = {
+			"keys": key_union,
+			"meta": per_period_meta,
+		}
+	except Exception:
+		pass
+	base.update_layout(meta=meta_dict)
+	return base
+
+
+def _build_frequency_switched_html(
+	raw_builder: Callable[[List[Any], Optional[str]], str],
+	results: List[Any],
+	board: Optional[str],
+) -> str:
+	if not _has_frequency_bundle(results):
+		return raw_builder(results, board)
+
+	html_docs: List[str] = []
+	for fi in range(3):
+		out = raw_builder(_results_view(results, fi), board)
+		if not isinstance(out, str):
+			raise TypeError(f"Expected str from HTML builder, got {type(out)}")
+		html_docs.append(str(out))
+
+	def _extract_title(doc: str) -> Optional[str]:
+		try:
+			m = re.search(r"<div\s+class=['\"]title['\"]>(.*?)</div>", doc, flags=re.IGNORECASE | re.DOTALL)
+			if m:
+				return html.unescape(re.sub(r"<[^>]+>", "", m.group(1)).strip())
+			m = re.search(r"<title>(.*?)</title>", doc, flags=re.IGNORECASE | re.DOTALL)
+			if m:
+				return html.unescape(re.sub(r"<[^>]+>", "", m.group(1)).strip())
+		except Exception:
+			return None
+		return None
+
+	page_title = _extract_title(html_docs[0]) or _safe_title(board, "Visual")
+	HIDE_HEADER_STYLE = "<style>.header{display:none!important}</style>"
+	embedded_docs: List[str] = []
+	for d in html_docs:
+		low = d.lower()
+		needs_hide = ("tabulator" in low)
+		if not needs_hide:
+			embedded_docs.append(d)
+			continue
+		if "</head>" in low:
+			parts = re.split(r"</head>", d, flags=re.IGNORECASE, maxsplit=1)
+			embedded_docs.append(parts[0] + HIDE_HEADER_STYLE + "</head>" + (parts[1] if len(parts) > 1 else ""))
+		else:
+			embedded_docs.append(HIDE_HEADER_STYLE + d)
+
+	b64_docs = [base64.b64encode(h.encode("utf-8")).decode("ascii") for h in embedded_docs]
+	return f"""<!doctype html>
+	<html>
+	<head>
+		<meta charset='utf-8'/>
+		<meta name='viewport' content='width=device-width, initial-scale=1'/>
+		<title>{html.escape(page_title, quote=True)}</title>
+		<style>
+			:root {{
+				--bg: #ffffff;
+				--fg: #111827;
+				--muted: #6b7280;
+				--border: #e5e7eb;
+				--panel: #ffffff;
+				--panel2: #f9fafb;
+			}}
+			body.dark {{
+				--bg: #0b1220;
+				--fg: #e5e7eb;
+				--muted: rgba(229,231,235,0.72);
+				--border: rgba(255,255,255,0.18);
+				--panel: rgba(17,24,39,0.92);
+				--panel2: rgba(17,24,39,0.72);
+			}}
+			body {{ margin:0; font-family: Segoe UI, Arial, sans-serif; background: var(--bg); color: var(--fg); }}
+			.header {{ padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel); display:grid; gap:6px; }}
+			.title {{ font-size: 16px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+			.sub {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; color: var(--muted); font-size: 13px; }}
+			.tc-mini {{ color: var(--muted); font-size: 12px; }}
+			select.tc-menu-btn {{ padding:6px 10px; border:1px solid var(--border); background: var(--panel2); border-radius:10px; cursor:pointer; }}
+			.wrap {{ height: calc(100vh - 52px); }}
+			iframe {{ width:100%; height:100%; border:0; display:none; }}
+			iframe.active {{ display:block; }}
+		</style>
+	</head>
+	<body>
+		<div class='header'>
+			<div class='sub'>
+				<span class='tc-mini'>Period:</span>
+				<select class='tc-menu-btn' id='tc-period'>
+					<option value='0'>Daily</option>
+					<option value='1'>Weekly</option>
+					<option value='2'>Monthly</option>
+				</select>
+				<span>Tip: drag to select, Ctrl+C to copy. Use header filters to search</span>
+			</div>
+		</div>
+		<div class='wrap'>
+			<iframe class='active' id='v0' src='data:text/html;base64,{b64_docs[0]}'></iframe>
+			<iframe id='v1' src='data:text/html;base64,{b64_docs[1]}'></iframe>
+			<iframe id='v2' src='data:text/html;base64,{b64_docs[2]}'></iframe>
+		</div>
+		<script>
+			(function(){{
+				const sel = document.getElementById('tc-period');
+				const frames = [document.getElementById('v0'), document.getElementById('v1'), document.getElementById('v2')];
+				function applyTheme(dark){{
+					document.body.classList.toggle('dark', !!dark);
+					frames.forEach((f) => {{
+						try {{ f && f.contentWindow && f.contentWindow.postMessage({{tc_theme: !!dark}}, '*'); }} catch (e) {{}}
+					}});
+				}}
+				function select(i){{
+					sel.value = String(i);
+					frames.forEach((f, idx) => f.classList.toggle('active', idx === i));
+					try {{
+						const savedTheme = localStorage.getItem('tc_theme');
+						applyTheme(savedTheme === 'dark');
+					}} catch (e) {{
+						applyTheme(false);
+					}}
+					try {{ localStorage.setItem('tc_table_period', String(i)); }} catch (e) {{}}
+				}}
+				window.addEventListener('message', (ev) => {{
+					try {{
+								if (!ev || !ev.data) return;
+								if (typeof ev.data.tc_theme === 'boolean') applyTheme(ev.data.tc_theme);
+					}} catch (e) {{}}
+				}});
+				sel.addEventListener('change', () => select(parseInt(sel.value || '0', 10) || 0));
+				try {{
+					const saved = parseInt(localStorage.getItem('tc_table_period') || '0', 10);
+					select(isFinite(saved) ? Math.max(0, Math.min(2, saved)) : 0);
+				}} catch (e) {{
+					select(0);
+				}}
+			}})();
+		</script>
+	</body>
+	</html>"""
+def _wrap_visual_builder(builder: Callable[[List[Any], Optional[str]], Any], *, kind: str) -> Callable[[List[Any], Optional[str]], Any]:
+	if kind == "html":
+		return lambda results, board=None: _build_frequency_switched_html(builder, results, board)
+	return lambda results, board=None: _build_frequency_switched_figure(builder, results, board)
 
 
 def _as_1d_float(arr: Any, length: Optional[int] = None) -> Optional[np.ndarray]:
@@ -222,8 +511,8 @@ def _apply_display_layout_defaults(fig: go.Figure) -> None:
 	try:
 		ums = list(fig.layout.updatemenus) if getattr(fig.layout, "updatemenus", None) else []
 		new_ums = []
-		base_y = 1.22
-		step = 0.10
+		base_y = 1.25
+		step = 0.12
 		for i, um in enumerate(ums):
 			try:
 				d = um.to_plotly_json()
@@ -240,6 +529,19 @@ def _apply_display_layout_defaults(fig: go.Figure) -> None:
 			d.setdefault("showactive", True)
 			new_ums.append(d)
 		fig.update_layout(updatemenus=new_ums)
+
+		# Ensure top margin is large enough for stacked menus.
+		try:
+			um_count = len(new_ums)
+			if um_count > 1:
+				m = fig.layout.margin.to_plotly_json() if getattr(fig.layout, "margin", None) else {}
+				current_t = int(m.get("t", 0) or 0)
+				need_t = 120 + 32 * (um_count - 1)
+				if need_t > current_t:
+					m["t"] = need_t
+					fig.update_layout(margin=m)
+		except Exception:
+			pass
 	except Exception:
 
 		return
@@ -523,7 +825,6 @@ def _wrap_plotly_fragment_html(*, fragment: str, title: str) -> str:
 			grid-template-columns: 1fr;
 			gap: 6px;
 		}
-		/* In popovers, size to content (no excessive empty width). */
 		.tc-popup .tc-checklist {
 			width: max-content;
 			min-width: 220px;
@@ -740,7 +1041,6 @@ __FRAGMENT__
 					const data = (div && Array.isArray(div.data)) ? div.data : [];
 					for (let i = 0; i < data.length; i++) {
 						const t = data[i] || {};
-						// Common cases: surface/heatmap/scatter with showscale + colorbar.
 						if (t.colorbar) return true;
 						if (t.showscale && (t.type || '').toLowerCase() !== 'scatter') return true;
 						if (t.marker && t.marker.colorbar) return true;
@@ -816,6 +1116,180 @@ __FRAGMENT__
 				} catch (e) {}
 			}
 
+			function _freqState(div) {
+				try {
+					const meta = (div && div.layout && div.layout.meta) ? div.layout.meta : {};
+					const cfg = meta && meta.tc_freq_switch;
+					if (!cfg) return null;
+					const views = Array.isArray(cfg.views) ? cfg.views : [];
+					if (!views.length) return null;
+					div.__tc_freq = div.__tc_freq || {};
+					const st = div.__tc_freq;
+					st.views = views;
+					let bs = Number(cfg.block_size);
+					if (!isFinite(bs) || bs <= 0) {
+						const v0 = views[0] || {};
+						const tot = Array.isArray(v0.visible) ? v0.visible.length : ((div && Array.isArray(div.data)) ? div.data.length : 0);
+						bs = Math.max(0, Math.floor(Number(tot || 0) / 3));
+					}
+					st.blockSize = bs;
+					if (!isFinite(Number(st.idx))) {
+						const defIdx = (cfg.default_index == null) ? 0 : Number(cfg.default_index);
+						st.idx = isFinite(defIdx) ? defIdx : 0;
+					}
+					st.idx = Math.max(0, Math.min(views.length - 1, Number(st.idx) || 0));
+					const pm = meta && meta.tc_freq_period_meta;
+					if (pm && typeof pm === 'object') st.periodMeta = pm;
+					return st;
+				} catch (e) {
+					return null;
+				}
+			}
+
+			function _applyPeriodMeta(div) {
+				try {
+					const st = _freqState(div);
+					if (!st || !st.periodMeta) return;
+					const pm = st.periodMeta;
+					const keys = Array.isArray(pm.keys) ? pm.keys : [];
+					const metaList = Array.isArray(pm.meta) ? pm.meta : [];
+					if (!metaList.length) return;
+					const sel = metaList[Math.max(0, Math.min(metaList.length - 1, Number(st.idx) || 0))] || {};
+					div.layout = div.layout || {};
+					div.layout.meta = div.layout.meta || {};
+					const m = div.layout.meta;
+					const useKeys = keys.length ? keys : Object.keys(sel || {});
+					useKeys.forEach((k) => {
+						try {
+							if (sel && Object.prototype.hasOwnProperty.call(sel, k)) m[k] = sel[k];
+							else delete m[k];
+						} catch (e) {}
+					});
+				} catch (e) {}
+			}
+
+			function _freqOffset(div) {
+				const st = _freqState(div);
+				if (!st) return 0;
+				const bs = Number(st.blockSize || 0);
+				const idx = Number(st.idx || 0);
+				return (isFinite(bs) && bs > 0) ? (idx * bs) : 0;
+			}
+
+			function _reapplyAfterFreq(div) {
+				try {
+					const a = div && div.__tc_apply ? div.__tc_apply : null;
+					if (!a) return;
+					if (typeof a.syncStackMeta === 'function') a.syncStackMeta();
+					if (typeof a.syncDistMeta === 'function') a.syncDistMeta();
+					if (typeof a.syncSurfaceMeta === 'function') a.syncSurfaceMeta();
+					if (typeof a.viewSwitch === 'function') a.viewSwitch();
+					if (typeof a.topN === 'function') a.topN();
+					if (typeof a.stacked === 'function') a.stacked();
+					if (typeof a.finalPnlPick === 'function') a.finalPnlPick();
+					if (typeof a.distApply === 'function') a.distApply();
+					if (typeof a.surfaceApply === 'function') a.surfaceApply();
+				} catch (e) {}
+			}
+
+			function _getBaseVisible(div) {
+				try {
+					const st = _freqState(div);
+					if (st && Array.isArray(st.baseVisible) && st.baseVisible.length) return st.baseVisible.slice();
+					const out = [];
+					const data = (div && Array.isArray(div.data)) ? div.data : [];
+					for (let i = 0; i < data.length; i++) {
+						const t = data[i] || {};
+						out.push((t.visible == null) ? true : t.visible);
+					}
+					return out;
+				} catch (e) {
+					return [];
+				}
+			}
+
+			function _applyFreqIndex(div, idx) {
+				try {
+					const st = _freqState(div);
+					if (!st) return false;
+					const views = st.views || [];
+					if (!views.length) return false;
+					const i = Math.max(0, Math.min(views.length - 1, Number(idx) || 0));
+					st.idx = i;
+					const v = views[i] || views[0];
+					if (v && Array.isArray(v.visible)) {
+						const vis = v.visible.slice();
+						st.baseVisible = vis.slice();
+						try { window.Plotly.restyle(div, { 'visible': vis }); } catch (e) {}
+					}
+					try {
+						const rel = (v && v.relayout) ? v.relayout : {};
+						if (rel && typeof rel === 'object') window.Plotly.relayout(div, rel);
+					} catch (e) {}
+					try { window.Plotly.relayout(div, { 'title.text': '' }); } catch (e) {}
+					try { _applyPeriodMeta(div); } catch (e) {}
+					try { _reapplyAfterFreq(div); } catch (e) {}
+					return true;
+				} catch (e) {
+					return false;
+				}
+			}
+
+			function _applyVisibleWithBase(div, mutate) {
+				const vis = _getBaseVisible(div);
+				if (!vis.length) return;
+				try { if (typeof mutate === 'function') mutate(vis); } catch (e) {}
+				try { window.Plotly.restyle(div, { 'visible': vis }); } catch (e) {}
+				try {
+					const st = _freqState(div);
+					if (st) st.baseVisible = vis.slice();
+				} catch (e) {}
+			}
+
+			function _makeFreqSwitchControl(div) {
+				try {
+					const meta = (div && div.layout && div.layout.meta) ? div.layout.meta : {};
+					const cfg = meta && meta.tc_freq_switch;
+					if (!cfg) return null;
+					const views = Array.isArray(cfg.views) ? cfg.views : [];
+					if (!views.length) return null;
+					const st = _freqState(div);
+
+					const wrap = document.createElement('div');
+					wrap.className = 'tc-menu';
+					const lab = document.createElement('span');
+					lab.className = 'tc-mini';
+					lab.textContent = (cfg.label || 'Period:');
+					lab.style.marginRight = '6px';
+					const sel = document.createElement('select');
+					sel.className = 'tc-menu-btn';
+					views.forEach((v, i) => {
+						const opt = document.createElement('option');
+						opt.value = String(i);
+						opt.textContent = (v && v.label) ? String(v.label) : ('P' + String(i + 1));
+						sel.appendChild(opt);
+					});
+					const defIdx = st ? Number(st.idx || 0) : ((cfg.default_index == null) ? 0 : Number(cfg.default_index));
+					sel.value = String(isFinite(defIdx) ? defIdx : 0);
+					sel.addEventListener('change', () => {
+						const idx = Number(sel.value || 0) || 0;
+						_applyFreqIndex(div, idx);
+						setTimeout(() => _positionControls(div), 0);
+					});
+					wrap.appendChild(lab);
+					wrap.appendChild(sel);
+					try {
+						if (st && !st._appliedOnce) {
+							st._appliedOnce = true;
+							setTimeout(() => { try { _applyFreqIndex(div, Number(sel.value || 0) || 0); } catch (e) {} }, 0);
+						}
+					} catch (e) {}
+					return wrap;
+				} catch (e) {
+					return null;
+				}
+			}
+
 			function _initViewSwitchSelector(div) {
 				try {
 					const meta = (div && div.layout && div.layout.meta) ? div.layout.meta : {};
@@ -823,6 +1297,8 @@ __FRAGMENT__
 					if (!cfg) return false;
 					const views = Array.isArray(cfg.views) ? cfg.views : [];
 					if (!views.length) return false;
+
+					const freqWrap = _makeFreqSwitchControl(div);
 
 					const wrap = document.createElement('div');
 					wrap.className = 'tc-menu';
@@ -840,22 +1316,46 @@ __FRAGMENT__
 					});
 					const defIdx = (cfg.default_index == null) ? 0 : Number(cfg.default_index);
 					sel.value = String(isFinite(defIdx) ? defIdx : 0);
-					sel.addEventListener('change', () => {
+
+					function _applySelectedView() {
 						const idx = Number(sel.value || 0) || 0;
 						const v = views[Math.max(0, Math.min(views.length - 1, idx))] || views[0];
 						if (!v) return;
 						try {
-							if (Array.isArray(v.visible)) window.Plotly.restyle(div, { 'visible': v.visible });
+							const st = _freqState(div);
+							const bs = st ? Number(st.blockSize || 0) : 0;
+							const off = _freqOffset(div);
+							if (Array.isArray(v.visible)) {
+								if (bs > 0 && v.visible.length === bs) {
+									_applyVisibleWithBase(div, (vis) => {
+										for (let j = 0; j < bs; j++) {
+											const k = off + j;
+											if (k >= 0 && k < vis.length) vis[k] = v.visible[j];
+										}
+									});
+								} else {
+									if (v.visible.length === ((div.data || []).length)) {
+										_applyVisibleWithBase(div, (vis) => {
+											for (let j = 0; j < vis.length; j++) vis[j] = v.visible[j];
+										});
+									}
+								}
+							}
 						} catch (e) {}
 						try {
 							const rel = (v && v.relayout) ? v.relayout : {};
 							if (rel && typeof rel === 'object') window.Plotly.relayout(div, rel);
 						} catch (e) {}
+						try { window.Plotly.relayout(div, { 'title.text': '' }); } catch (e) {}
 						setTimeout(() => _positionControls(div), 0);
-					});
+					}
+
+					sel.addEventListener('change', _applySelectedView);
+					div.__tc_apply = div.__tc_apply || {};
+					div.__tc_apply.viewSwitch = _applySelectedView;
 					wrap.appendChild(lab);
 					wrap.appendChild(sel);
-					_addControlItems(div, [wrap]);
+					_addControlItems(div, [freqWrap, wrap].filter(Boolean));
 					return true;
 				} catch (e) {
 					return false;
@@ -867,6 +1367,7 @@ __FRAGMENT__
 					const meta = (div && div.layout && div.layout.meta) ? div.layout.meta : {};
 					const cfg = meta && meta.tc_topn;
 					if (!cfg) return false;
+					const freqWrap = _makeFreqSwitchControl(div);
 					const traceStart = Number(cfg.trace_start);
 					const traceCount = Number(cfg.trace_count);
 					const rank = Array.isArray(cfg.rank) ? cfg.rank.map(v => Number(v)) : [];
@@ -887,16 +1388,18 @@ __FRAGMENT__
 
 					function _apply(n) {
 						const top = _topIdx(n);
-						const vis = [];
-						// Preserve existing visibility for prefix traces.
-						for (let i = 0; i < traceStart; i++) {
-							const t = (div.data && div.data[i]) ? div.data[i] : {};
-							vis.push((t.visible == null) ? true : t.visible);
-						}
-						for (let i = 0; i < traceCount; i++) {
-							vis.push(top.has(i) ? true : 'legendonly');
-						}
-						try { window.Plotly.restyle(div, { 'visible': vis }); } catch (e) {}
+						const st = _freqState(div);
+						const bs = st ? Number(st.blockSize || 0) : 0;
+						const off = _freqOffset(div);
+						_applyVisibleWithBase(div, (vis) => {
+							const start = (bs > 0) ? (off + traceStart) : traceStart;
+							for (let i = 0; i < traceCount; i++) {
+								const k = start + i;
+								if (k >= 0 && k < vis.length) {
+									vis[k] = top.has(i) ? true : 'legendonly';
+								}
+							}
+						});
 					}
 
 					const wrap = document.createElement('div');
@@ -915,13 +1418,31 @@ __FRAGMENT__
 					});
 					const defN = Number(cfg.default_n);
 					sel.value = String(isFinite(defN) ? defN : (options[0] || 12));
+					div.__tc_apply = div.__tc_apply || {};
+					div.__tc_apply.topN = () => {
+						try {
+							const nn = Number(sel.value || cfg.default_n || 10) || 10;
+							_apply(nn);
+						} catch (e) {}
+					};
 					sel.addEventListener('change', () => {
 						const n = Number(sel.value);
 						_apply(isFinite(n) ? n : 12);
 					});
 					wrap.appendChild(lab);
 					wrap.appendChild(sel);
-					_addControlItems(div, [wrap]);
+					_addControlItems(div, [freqWrap, wrap].filter(Boolean));
+					return true;
+				} catch (e) {
+					return false;
+				}
+			}
+
+			function _initFreqSelector(div) {
+				try {
+					const freqWrap = _makeFreqSwitchControl(div);
+					if (!freqWrap) return false;
+					_addControlItems(div, [freqWrap]);
 					return true;
 				} catch (e) {
 					return false;
@@ -955,7 +1476,6 @@ __FRAGMENT__
 				});
 				wrap.appendChild(btn);
 				wrap.appendChild(pop);
-				// Close when clicking away.
 				document.addEventListener('click', (ev) => {
 					const t = ev && ev.target;
 					if (!t) return;
@@ -977,12 +1497,34 @@ __FRAGMENT__
 				return bar;
 			}
 
+			function _addDistribFieldControls(div, items) {
+				const bar = _ensureControlsBar();
+				if (!bar) return null;
+				bar.innerHTML = '';
+				bar.classList.add('has-controls');
+				bar.style.left = '10px';
+				bar.style.top = '10px';
+				bar.style.width = 'min-content';
+
+				const cont = document.createElement('div');
+				cont.className = 'tc-cont';
+				cont.style.width = 'max-content';
+				cont.style.display = 'flex';
+				cont.style.gap = 'inherit';
+				(items || []).forEach(it => { if (it) cont.appendChild(it); });
+				bar.appendChild(cont);
+
+				setTimeout(() => _positionControls(div), 80);
+				window.addEventListener('resize', () => _positionControls(div));
+				try { if (div && div.on) div.on('plotly_buttonclicked', () => _positionControls(div)); } catch (e) {}
+				return bar;
+			}
+
 			function _add3dChoiceFieldControls(div, items) {
 				const bar = _ensureControlsBar();
 				if (!bar) return null;
 				bar.innerHTML = '';
 				bar.classList.add('has-controls');
-				// Match requested 3D-only structure & placement.
 				bar.style.left = '10px';
 				bar.style.top = '10px';
 				bar.style.width = 'min-content';
@@ -1143,7 +1685,8 @@ __FRAGMENT__
 					popupBody.appendChild(row);
 
 					const menu = _makeMenu('Final PnL: pick tickers/types', popupBody);
-					_addControlItems(div, [menu.wrap]);
+					const freqWrap = _makeFreqSwitchControl(div);
+					_addControlItems(div, [freqWrap, menu.wrap].filter(Boolean));
 					return true;
 				} catch (e) {
 					return false;
@@ -1155,7 +1698,8 @@ __FRAGMENT__
 					const meta = (div.layout && div.layout.meta && div.layout.meta.tc_dist_full) ? div.layout.meta.tc_dist_full : null;
 					if (!meta) return false;
 					if (!Array.isArray(div.data) || div.data.length < 1) return false;
-					const tr = div.data[0] || {};
+					const off0 = _freqOffset(div);
+					const tr = div.data[off0] || div.data[0] || {};
 					if (String(tr.type || '').toLowerCase() !== 'bar') return false;
 					const labels = Array.isArray(meta.labels) ? meta.labels.map(v => String(v)) : [];
 					const dates = Array.isArray(meta.dates) ? meta.dates.map(v => String(v)) : [];
@@ -1178,8 +1722,30 @@ __FRAGMENT__
 					}
 					dateSel.value = base.dates[base.dates.length - 1];
 
+					function _syncDistMeta() {
+						try {
+							const m2 = (div.layout && div.layout.meta && div.layout.meta.tc_dist_full) ? div.layout.meta.tc_dist_full : null;
+							if (!m2) return;
+							const labels2 = Array.isArray(m2.labels) ? m2.labels.map(v => String(v)) : base.labels;
+							const dates2 = Array.isArray(m2.dates) ? m2.dates.map(v => String(v)) : base.dates;
+							const mat2 = Array.isArray(m2.mat) ? m2.mat : base.mat;
+							base.labels = labels2;
+							base.dates = dates2;
+							base.mat = mat2;
+							const prev = String(dateSel.value || '');
+							dateSel.innerHTML = '';
+							for (const d of base.dates) {
+								const opt = document.createElement('option');
+								opt.value = d;
+								opt.textContent = d;
+								dateSel.appendChild(opt);
+							}
+							if (prev && base.dates.indexOf(prev) >= 0) dateSel.value = prev;
+							else dateSel.value = base.dates[base.dates.length - 1];
+						} catch (e) {}
+					}
+
 					const selected = new Set();
-					// Default: none selected => means "All".
 					const checklist = _makeChecklist(base.labels, selected, 34);
 
 					function _applyDist() {
@@ -1203,7 +1769,11 @@ __FRAGMENT__
 						let meanIdx = -1;
 						let medIdx = -1;
 						try {
-							for (let i = 1; i < (div.data || []).length; i++) {
+							const st = _freqState(div);
+							const bs = st ? Number(st.blockSize || 0) : 0;
+							const off = _freqOffset(div);
+							const end = (bs > 0) ? Math.min((div.data || []).length, off + bs) : (div.data || []).length;
+							for (let i = Math.max(0, off + 1); i < end; i++) {
 								const tt = div.data[i] || {};
 								if (String(tt.type || '').toLowerCase() !== 'scatter') continue;
 								const nm = String(tt.name || '').toLowerCase();
@@ -1224,12 +1794,13 @@ __FRAGMENT__
 						const meanY = x2.map(_ => mean);
 						const medY = x2.map(_ => med);
 						try {
+							const off = _freqOffset(div);
 							window.Plotly.restyle(div, {
 								'x': [x2],
 								'y': [y2],
 								'marker.color': [colors2],
 								'hovertemplate': [`%{x}<br>Date=${date}<br>PnL=%{y:.2f}<extra></extra>`],
-							}, [0]);
+							}, [off]);
 							if (meanIdx >= 0) {
 								window.Plotly.restyle(div, {
 									'x': [x2],
@@ -1288,7 +1859,11 @@ __FRAGMENT__
 
 					applyBtn.className = 'tc-menu-btn';
 					resetBtn.className = 'tc-menu-btn';
-					_addControlItems(div, [dateWrap, pickMenu.wrap, applyBtn, resetBtn]);
+					const freqWrap = _makeFreqSwitchControl(div);
+					div.__tc_apply = div.__tc_apply || {};
+					div.__tc_apply.syncDistMeta = _syncDistMeta;
+					div.__tc_apply.distApply = () => { try { _syncDistMeta(); } catch (e) {} try { _applyDist(); } catch (e) {} };
+					_addDistribFieldControls(div, [freqWrap, dateWrap, pickMenu.wrap, applyBtn, resetBtn].filter(Boolean));
 					return true;
 				} catch (e) {
 					return false;
@@ -1297,11 +1872,11 @@ __FRAGMENT__
 
 			function _initStackedSelector(div) {
 				try {
-					const meta = (div.layout && div.layout.meta && div.layout.meta.tc_stack_full) ? div.layout.meta.tc_stack_full : null;
+					let meta = (div.layout && div.layout.meta && div.layout.meta.tc_stack_full) ? div.layout.meta.tc_stack_full : null;
 					if (!meta) return false;
-					const isPercent = !!meta.percent;
-					const tm = meta.trace_map || {};
-					const compCount = Number(tm.comp_count || 0);
+					let isPercent = !!meta.percent;
+					let tm = meta.trace_map || {};
+					let compCount = Number(tm.comp_count || 0);
 					if (!compCount || !Array.isArray(meta.x) || meta.x.length < 2) return false;
 					if (!Array.isArray(meta.values) || !Array.isArray(meta.values[0] || [])) return false;
 					div.__tc_base = div.__tc_base || {};
@@ -1319,6 +1894,25 @@ __FRAGMENT__
 					}
 
 					const base = div.__tc_base.stack;
+
+					function _syncStackMeta() {
+						try {
+							const m2 = (div.layout && div.layout.meta && div.layout.meta.tc_stack_full) ? div.layout.meta.tc_stack_full : null;
+							if (!m2) return;
+							meta = m2;
+							isPercent = !!meta.percent;
+							tm = meta.trace_map || {};
+							compCount = Number(tm.comp_count || 0);
+							base.x = (meta.x || []).map(v => String(v));
+							base.labels = (meta.labels || []).map(v => String(v));
+							base.values = meta.values;
+							base.cash = meta.cash || [];
+							base.credit_neg = meta.credit_neg || [];
+							base.total = meta.total || [];
+							base.trace_map = tm;
+							base.percent = isPercent;
+						} catch (e) {}
+					}
 					const absSec = document.createElement('input');
 					absSec.type = 'checkbox';
 					absSec.checked = false;
@@ -1351,11 +1945,67 @@ __FRAGMENT__
 						return idx;
 					}
 
+					function _inferStepMs(xArr) {
+						try {
+							const ts = (xArr || []).map(v => Date.parse(String(v))).filter(v => Number.isFinite(v));
+							if (ts.length < 2) return 24 * 60 * 60 * 1000;
+							ts.sort((a, b) => a - b);
+							const diffs = [];
+							for (let i = 1; i < ts.length; i++) {
+								const d = ts[i] - ts[i - 1];
+								if (d > 0) diffs.push(d);
+							}
+							if (!diffs.length) return 24 * 60 * 60 * 1000;
+							diffs.sort((a, b) => a - b);
+							const mid = Math.floor(diffs.length / 2);
+							const step = diffs[mid] || diffs[0];
+							return Math.max(60 * 60 * 1000, Math.min(step, 90 * 24 * 60 * 60 * 1000));
+						} catch (e) {
+							return 24 * 60 * 60 * 1000;
+						}
+					}
+
+					function _inferLocalWidthsMs(xArr, fallbackStepMs) {
+						try {
+							const ts = (xArr || []).map(v => Date.parse(String(v)));
+							if (!ts.length) return null;
+							for (let i = 0; i < ts.length; i++) {
+								if (!Number.isFinite(ts[i])) return null;
+							}
+							const n = ts.length;
+							const step = Number.isFinite(fallbackStepMs) ? fallbackStepMs : (24 * 60 * 60 * 1000);
+							const out = new Array(n);
+							for (let i = 0; i < n; i++) {
+								let prevGap = null;
+								let nextGap = null;
+								if (i > 0) {
+									const g = ts[i] - ts[i - 1];
+									if (g > 0) prevGap = g;
+								}
+								if (i < n - 1) {
+									const g = ts[i + 1] - ts[i];
+									if (g > 0) nextGap = g;
+								}
+								let local = step;
+								if (prevGap != null && nextGap != null) local = Math.min(prevGap, nextGap);
+								else if (prevGap != null) local = prevGap;
+								else if (nextGap != null) local = nextGap;
+								local = Math.max(60 * 60 * 1000, Math.min(local, 90 * 24 * 60 * 60 * 1000));
+								out[i] = local;
+							}
+							return out;
+						} catch (e) {
+							return null;
+						}
+					}
+
 					function _isBarMode() {
 						try {
 							const bi = Number(tm.bar_credit);
 							if (!Number.isFinite(bi)) return false;
-							const t = (div.data && div.data[bi]) ? div.data[bi] : null;
+							const off = _freqOffset(div);
+							const k = off + bi;
+							const t = (div.data && div.data[k]) ? div.data[k] : null;
 							return !!(t && (t.visible === true));
 						} catch (e) { return false; }
 					}
@@ -1363,18 +2013,39 @@ __FRAGMENT__
 					let viewMode = _isBarMode() ? 'bar' : 'area';
 					function _applyView(mode) {
 						try {
+							try { _syncStackMeta(); } catch (e) {}
 							const vcfg = meta.views || {};
 							const v = (mode === 'bar') ? (vcfg.bar || null) : (vcfg.area || null);
-							if (v && Array.isArray(v.visible)) window.Plotly.restyle(div, { 'visible': v.visible });
+							if (v && Array.isArray(v.visible)) {
+								const st = _freqState(div);
+								const bs = st ? Number(st.blockSize || 0) : 0;
+								const off = _freqOffset(div);
+								if (bs > 0) {
+									let mask = v.visible;
+									if (mask.length === ((div.data || []).length)) mask = mask.slice(off, off + bs);
+									if (mask.length === bs) {
+										_applyVisibleWithBase(div, (vis) => {
+											for (let j = 0; j < bs; j++) {
+												const k = off + j;
+												if (k >= 0 && k < vis.length) vis[k] = mask[j];
+											}
+										});
+									} else {
+										_applyVisibleWithBase(div, (vis) => {});
+									}
+								} else {
+									window.Plotly.restyle(div, { 'visible': v.visible });
+								}
+							}
 							if (v && v.relayout && typeof v.relayout === 'object') window.Plotly.relayout(div, v.relayout);
 						} catch (e) {}
 					}
 
 					function _applyStack() {
+						try { _syncStackMeta(); } catch (e) {}
 						const useAbsSec = !!absSec.checked;
 						const useAbsCred = !!absCred.checked;
 						const barMode = _isBarMode();
-						// Target wide bars + ~60/40 bar/space feel.
 						const slotPx = 28;
 						let plotW = 0;
 						try { plotW = (div && div.getBoundingClientRect) ? div.getBoundingClientRect().width : 0; } catch (e) { plotW = 0; }
@@ -1386,14 +2057,14 @@ __FRAGMENT__
 						}
 						let pick = null;
 						if (barMode) {
-							const maxN = Math.max(10, Math.floor((plotW - 40) / slotPx));
-							pick = _makeIndexSelection(maxN, base.x.length);
+							pick = Array.from({length: base.x.length}, (_, i) => i);
 						} else {
 							pick = Array.from({length: base.x.length}, (_, i) => i);
 						}
 						const x2 = pick.map(i => base.x[i]);
+						const stepMs = _inferStepMs(x2);
+						const localSteps = _inferLocalWidthsMs(x2, stepMs);
 
-						// transformed components
 						const compY = [];
 						for (let ci = 0; ci < compCount; ci++) {
 							const row = Array.isArray(base.values[ci]) ? base.values[ci] : [];
@@ -1407,8 +2078,6 @@ __FRAGMENT__
 						const cashRow = Array.isArray(base.cash) ? base.cash : [];
 						const cashY0 = pick.map(i => Number(cashRow[i]));
 						const crRow = Array.isArray(base.credit_neg) ? base.credit_neg : [];
-						// Credit is always an overlay from 0.
-						// Abs credit: show it above 0 (positive), but still overlay (not stacked).
 						const crY0 = pick.map(i => {
 							const v = Number(crRow[i]);
 							return useAbsCred ? Math.abs(v) : v;
@@ -1455,7 +2124,6 @@ __FRAGMENT__
 							}
 							totY = pick.map(_ => 100.0);
 						} else {
-							// total adjustment (value mode)
 							const totRow = Array.isArray(base.total) ? base.total : [];
 							totY = pick.map(i => {
 								let t = Number(totRow[i]);
@@ -1467,7 +2135,7 @@ __FRAGMENT__
 										const v = Number(row[i]);
 										if (v < 0) negSum += v;
 									}
-									adj += -2 * negSum; // negSum is negative
+									adj += -2 * negSum;
 								}
 								if (useAbsCred) {
 									// Abs credit should increase Total only by the part of credit that is larger
@@ -1491,37 +2159,49 @@ __FRAGMENT__
 						const cashNeg = cashY.map(_n);
 						const cashPos = cashY.map(_p);
 
-						// Build restyle arrays in the same order as trace_map indices.
 						const idxs = [];
 						const xArr = [];
 						const yArr = [];
+						const off = _freqOffset(div);
 						// area: cash_neg, comps_neg..., credit_overlay, cash_pos, comps_pos...
-						idxs.push(Number(tm.area_cash_neg)); xArr.push(x2); yArr.push(cashNeg);
+						idxs.push(off + Number(tm.area_cash_neg)); xArr.push(x2); yArr.push(cashNeg);
 						for (let ci = 0; ci < compCount; ci++) {
-							idxs.push(Number(tm.area_comp_neg_start) + ci);
+							idxs.push(off + Number(tm.area_comp_neg_start) + ci);
 							xArr.push(x2);
 							yArr.push(compYUse[ci].map(_n));
 						}
-						idxs.push(Number(tm.area_credit)); xArr.push(x2); yArr.push(crY);
-						idxs.push(Number(tm.area_cash_pos)); xArr.push(x2); yArr.push(cashPos);
+						idxs.push(off + Number(tm.area_credit)); xArr.push(x2); yArr.push(crY);
+						idxs.push(off + Number(tm.area_cash_pos)); xArr.push(x2); yArr.push(cashPos);
 						for (let ci = 0; ci < compCount; ci++) {
-							idxs.push(Number(tm.area_comp_pos_start) + ci);
+							idxs.push(off + Number(tm.area_comp_pos_start) + ci);
 							xArr.push(x2);
 							yArr.push(compYUse[ci].map(_p));
 						}
-						// overlay
-						idxs.push(Number(tm.overlay)); xArr.push(x2); yArr.push(totY);
+						idxs.push(off + Number(tm.overlay)); xArr.push(x2); yArr.push(totY);
 						// bar: cash, comps..., credit overlay
-						idxs.push(Number(tm.bar_cash)); xArr.push(x2); yArr.push(cashY);
-						for (let ci = 0; ci < compCount; ci++) { idxs.push(Number(tm.bar_comp_start) + ci); xArr.push(x2); yArr.push(compYUse[ci]); }
-						idxs.push(Number(tm.bar_credit)); xArr.push(x2); yArr.push(crY);
+						idxs.push(off + Number(tm.bar_cash)); xArr.push(x2); yArr.push(cashY);
+						for (let ci = 0; ci < compCount; ci++) { idxs.push(off + Number(tm.bar_comp_start) + ci); xArr.push(x2); yArr.push(compYUse[ci]); }
+						idxs.push(off + Number(tm.bar_credit)); xArr.push(x2); yArr.push(crY);
+						const barIdxs = [];
+						barIdxs.push(off + Number(tm.bar_cash));
+						for (let ci = 0; ci < compCount; ci++) barIdxs.push(off + Number(tm.bar_comp_start) + ci);
+						barIdxs.push(off + Number(tm.bar_credit));
 
 						try {
 							window.Plotly.restyle(div, { 'x': xArr, 'y': yArr }, idxs);
+							if (barMode) {
+								const wScale = 0.78;
+								const w = (localSteps && Array.isArray(localSteps) && localSteps.length === x2.length)
+									? localSteps.map(ms => wScale * ms)
+									: (wScale * stepMs);
+								window.Plotly.restyle(div, { 'width': w }, barIdxs);
+							} else {
+								window.Plotly.restyle(div, { 'width': null }, barIdxs);
+							}
 							window.Plotly.relayout(div, {
-								'bargap': 0.4,
+								'bargap': barMode ? 0.22 : 0.4,
 								'bargroupgap': 0.0,
-								'xaxis.type': barMode ? 'category' : 'date',
+								'xaxis.type': 'date',
 								'xaxis.rangeslider.visible': !barMode,
 							});
 							window.Plotly.Plots.resize(div);
@@ -1570,7 +2250,15 @@ __FRAGMENT__
 					row2.appendChild(btnAbsSec);
 					row2.appendChild(btnAbsCred);
 
-					_addControlItems(div, [row1, row2]);
+					const freqWrap = _makeFreqSwitchControl(div);
+					div.__tc_apply = div.__tc_apply || {};
+					div.__tc_apply.syncStackMeta = _syncStackMeta;
+					div.__tc_apply.stacked = () => {
+						try { _syncStackMeta(); } catch (e) {}
+						try { _applyView(viewMode); } catch (e) {}
+						try { setTimeout(_applyStack, 10); } catch (e) {}
+					};
+					_addControlItems(div, [freqWrap, row1, row2].filter(Boolean));
 					setTimeout(_applyStack, 60);
 					return true;
 				} catch (e) {
@@ -1599,8 +2287,11 @@ __FRAGMENT__
 
 					div.__tc_base = div.__tc_base || {};
 					if (!div.__tc_base.surface) {
+						const st0 = _freqState(div);
+						const bs0 = st0 ? Number(st0.blockSize || 0) : 0;
+						const relIdx = (bs0 > 0) ? (surfaceIndex % bs0) : surfaceIndex;
 						div.__tc_base.surface = {
-							surfaceIndex: surfaceIndex,
+							surfaceRel: relIdx,
 							x: x.slice(),
 							y: y.slice(),
 							z: _deepCopy2d(z),
@@ -1610,7 +2301,7 @@ __FRAGMENT__
 					const base = div.__tc_base.surface;
 					const yVisible = Array.isArray(t.y) ? t.y.map(v => String(v)) : [];
 					const ySelSet = new Set((yVisible || []).map(v => String(v)));
-					const yChecklist = _makeChecklist(base.y, ySelSet, 34);
+					let yChecklist = _makeChecklist(base.y, ySelSet, 34);
 
 					function _rankRowAbsMax(z2d) {
 						const scores = [];
@@ -1675,6 +2366,39 @@ __FRAGMENT__
 					xStart.value = base.x[0];
 					xEnd.value = base.x[base.x.length - 1];
 
+					function _syncSurfaceMeta() {
+						try {
+							const m2 = (div.layout && div.layout.meta && div.layout.meta.tc_surface_full) ? div.layout.meta.tc_surface_full : null;
+							if (!m2) return;
+							base.x = (Array.isArray(m2.x) ? m2.x.map(v => String(v)) : base.x);
+							base.y = (Array.isArray(m2.y) ? m2.y.map(v => String(v)) : base.y);
+							base.z = (Array.isArray(m2.z) ? _deepCopy2d(m2.z) : base.z);
+
+							const prev0 = String(xStart.value || '');
+							const prev1 = String(xEnd.value || '');
+							xStart.innerHTML = '';
+							xEnd.innerHTML = '';
+							for (const v of base.x) {
+								const o1 = document.createElement('option');
+								o1.value = v; o1.textContent = v;
+								xStart.appendChild(o1);
+								const o2 = document.createElement('option');
+								o2.value = v; o2.textContent = v;
+								xEnd.appendChild(o2);
+							}
+							if (prev0 && base.x.indexOf(prev0) >= 0) xStart.value = prev0; else xStart.value = base.x[0];
+							if (prev1 && base.x.indexOf(prev1) >= 0) xEnd.value = prev1; else xEnd.value = base.x[base.x.length - 1];
+
+							const pickedY = _checkedValues(yChecklist);
+							const pickSet = new Set(pickedY.map(v => String(v)));
+							const newChecklist = _makeChecklist(base.y, pickSet, 34);
+							try {
+								if (yChecklist && yChecklist.parentNode) yChecklist.parentNode.replaceChild(newChecklist, yChecklist);
+							} catch (e) {}
+							yChecklist = newChecklist;
+						} catch (e) {}
+					}
+
 					function _apply3d() {
 						const pickedY = _checkedValues(yChecklist);
 						const ySet = new Set(pickedY);
@@ -1703,12 +2427,16 @@ __FRAGMENT__
 							z2.push(row);
 						}
 
-						// Optional overlays: update Mean/Median surfaces if they exist.
 						let meanIdx = -1;
 						let medIdx = -1;
 						try {
-							for (let i = 0; i < (div.data || []).length; i++) {
-								if (i === base.surfaceIndex) continue;
+							const st = _freqState(div);
+							const bs = st ? Number(st.blockSize || 0) : 0;
+							const off = _freqOffset(div);
+							const sIdx = off + Number(base.surfaceRel || 0);
+							const end = (bs > 0) ? Math.min((div.data || []).length, off + bs) : (div.data || []).length;
+							for (let i = Math.max(0, off); i < end; i++) {
+								if (i === sIdx) continue;
 								const tt = div.data[i] || {};
 								if (String(tt.type || '').toLowerCase() !== 'surface') continue;
 								const nm = String(tt.name || '').toLowerCase();
@@ -1746,7 +2474,9 @@ __FRAGMENT__
 						const yText = y2.map(v => _shortenLabel(v, 28));
 
 						try {
-							const idxs = [base.surfaceIndex];
+							const off = _freqOffset(div);
+							const sIdx = off + Number(base.surfaceRel || 0);
+							const idxs = [sIdx];
 							const xArr = [x2];
 							const yArr = [y2];
 							const zArr = [z2];
@@ -1822,7 +2552,11 @@ __FRAGMENT__
 					xWrap.appendChild(dash);
 					xWrap.appendChild(xEnd);
 
-					_add3dChoiceFieldControls(div, [pickMenu.wrap, xWrap, applyBtn, resetBtn]);
+					const freqWrap = _makeFreqSwitchControl(div);
+					div.__tc_apply = div.__tc_apply || {};
+					div.__tc_apply.syncSurfaceMeta = _syncSurfaceMeta;
+					div.__tc_apply.surfaceApply = () => { try { _syncSurfaceMeta(); } catch (e) {} try { _apply3d(); } catch (e) {} };
+					_add3dChoiceFieldControls(div, [freqWrap, pickMenu.wrap, xWrap, applyBtn, resetBtn].filter(Boolean));
 					return true;
 				} catch (e) {
 					return false;
@@ -1832,18 +2566,16 @@ __FRAGMENT__
 			function _initControlsOnce() {
 				if (!window.Plotly) return;
 				const bar = document.getElementById('tc-controls');
-				if (bar && bar.classList && bar.classList.contains('has-controls')) return; // already built
+				if (bar && bar.classList && bar.classList.contains('has-controls')) return;
 				const divs = Array.from(document.querySelectorAll('.plotly-graph-div'));
 				if (!divs.length) return;
-				// Only add panels when a known interactive selector applies.
 				for (const div of divs) {
 					if (div.__tc_controls_inited) continue;
-					const added = _init3dSurfaceSelector(div) || _initStackedSelector(div) || _initDistributionBarSelector(div) || _initFinalPnlBarSelector(div) || _initViewSwitchSelector(div) || _initTopNSelector(div);
+					const added = _init3dSurfaceSelector(div) || _initStackedSelector(div) || _initDistributionBarSelector(div) || _initFinalPnlBarSelector(div) || _initViewSwitchSelector(div) || _initTopNSelector(div) || _initFreqSelector(div);
 					if (added) {
 						div.__tc_controls_inited = true;
-						break; // keep UI compact: one panel per page
+						break;
 					}
-					// If not added, do not mark inited so later retries can succeed.
 				}
 			}
 
@@ -1912,7 +2644,6 @@ __FRAGMENT__
 					});
 
 					const ums = Array.isArray(layout.updatemenus) ? layout.updatemenus : [];
-					// Controls live in the top margin area (not over the plot).
 					const baseY = 1.22;
 					const step = 0.095;
 					ums.forEach((_, i) => {
@@ -1937,7 +2668,6 @@ __FRAGMENT__
 				divs.forEach(div => {
 					try { window.Plotly.relayout(div, _themeUpdate(!!dark, div)); } catch (e) {}
 					try { _applyTraceTheme(!!dark, div); } catch (e) {}
-					// Title is shown in the dashboard header; avoid duplicating inside the chart.
 					try { window.Plotly.relayout(div, { 'title.text': '' }); } catch (e) {}
 					try { window.Plotly.Plots.resize(div); } catch (e) {}
 				});
@@ -1981,14 +2711,11 @@ __FRAGMENT__
 
 			document.addEventListener('DOMContentLoaded', () => {
 				applyTheme(false);
-				// Add optional per-visual selectors (only when relevant).
 				setTimeout(_initControlsOnce, 90);
 				setTimeout(_initControlsOnce, 520);
-				// Inform parent (dashboard) what exports are supported.
 				try {
 					window.parent && window.parent.postMessage({ tc_export_caps: _exportCapsPlotly() }, '*');
 				} catch (e) {}
-				// Run a couple times to catch first Plotly render.
 				setTimeout(() => applyTheme(document.body.classList.contains('dark')), 60);
 				setTimeout(() => applyTheme(document.body.classList.contains('dark')), 450);
 				setTimeout(_fitToViewport, 120);
@@ -2317,7 +3044,6 @@ def build_visuals_dashboard_html(results: List[Any], specs: List[VisualSpec], bo
 			if (!supported) {{
 				_addExportSection('Export');
 				_addExportItem('No export available for this visual', {{ scope: 'noop' }}, false);
-				// Still allow exporting HTML snapshot of the iframe page when possible.
 				_addSep();
 				_addExportSection('Page');
 				_addExportItem('Download HTML (page)', {{ _local: 'html' }}, true);
@@ -2382,8 +3108,6 @@ def build_visuals_dashboard_html(results: List[Any], specs: List[VisualSpec], bo
 		function toggleSidebar() {{
 			const collapsed = sidebar.classList.toggle('collapsed');
 			localStorage.setItem('tc_sidebar', collapsed ? 'collapsed' : 'open');
-			// The sidebar animates width; resize after the transition so Plotly
-			// recomputes layout using the final available width.
 			_postResizeToFrame();
 			setTimeout(_postResizeToFrame, 230);
 			setTimeout(_postResizeToFrame, 520);
@@ -2408,7 +3132,6 @@ def build_visuals_dashboard_html(results: List[Any], specs: List[VisualSpec], bo
 			if (chev) chev.textContent = catEl.classList.contains('open') ? '▾' : '▸';
 		}}
 
-		// Group by category
 		const grouped = new Map();
 		VIS.forEach((v, idx) => {{
 			const c = v.category || 'Other';
@@ -2462,7 +3185,6 @@ def build_visuals_dashboard_html(results: List[Any], specs: List[VisualSpec], bo
 			nav.appendChild(cat);
 		}});
 
-		// Restore persisted UI state
 		const savedTheme = localStorage.getItem('tc_theme');
 		if (savedTheme === 'dark') setTheme(true);
 		const savedSide = localStorage.getItem('tc_sidebar');
@@ -2553,72 +3275,73 @@ def available_visuals(results: List[Any]) -> List[VisualSpec]:
 	if not ok:
 		return []
 
+	results_d = _results_view(results, 0)
 
-	lookup_days = results[1] if len(results) > 1 else None
+
+	lookup_days = results_d[1] if len(results_d) > 1 else None
 	dt_ok = lookup_days is not None and isinstance(lookup_days, (list, tuple, np.ndarray)) and len(lookup_days) > 0
 
-	tickers = results[2] if len(results) > 2 else None
-	types = results[3] if len(results) > 3 else None
-	tickers_profit = results[0] if len(results) > 0 else None
-	ticker_volume_prices = results[4] if len(results) > 4 else None
-	start_money = results[13] if len(results) > 13 else None
+	tickers = results_d[2] if len(results_d) > 2 else None
+	types = results_d[3] if len(results_d) > 3 else None
+	tickers_profit = results_d[0] if len(results_d) > 0 else None
+	ticker_volume_prices = results_d[4] if len(results_d) > 4 else None
+	start_money = results_d[13] if len(results_d) > 13 else None
 
 	specs: List[VisualSpec] = []
-	if dt_ok and results[9] is not None:
-		specs.append(VisualSpec("portfolio_value", "Portfolio Value (Line / Candle / Waterfall)", build_portfolio_value_all_figure))
-		specs.append(VisualSpec("pct_delta", "% Portfolio Value Δ (Daily)", build_portfolio_value_pct_delta_figure))
-		specs.append(VisualSpec("overview_flows", "Profit / Cash / Credit (Lines)", build_overview_flows_figure))
+	if dt_ok and results_d[9] is not None:
+		specs.append(VisualSpec("portfolio_value", "Portfolio Value (Line / Candle / Waterfall)", _wrap_visual_builder(build_portfolio_value_all_figure, kind="figure")))
+		specs.append(VisualSpec("pct_delta", "% Portfolio Value Δ", _wrap_visual_builder(build_portfolio_value_pct_delta_figure, kind="figure")))
+		specs.append(VisualSpec("overview_flows", "Profit / Cash / Credit (Lines)", _wrap_visual_builder(build_overview_flows_figure, kind="figure")))
 
 
 
-	if dt_ok and results[7] is not None and results[8] is not None:
+	if dt_ok and results_d[7] is not None and results_d[8] is not None:
 		if ticker_volume_prices is not None and tickers is not None and types is not None:
-		 # IMPORTANT: exclude futures from the main stacked portfolio charts.
-			specs.append(VisualSpec("stack_tickers", "Portfolio Value — Stacked (Tickers excl. futures + Cash + Credit)", build_portfolio_value_stacked_by_ticker_figure))
-			specs.append(VisualSpec("stack_tickers_pct", "% Portfolio Value — 100% Stacked (Tickers excl. futures + Cash + Credit)", build_portfolio_value_stacked_by_ticker_pct_figure))
+			specs.append(VisualSpec("stack_tickers", "Portfolio Value — Stacked (Tickers excl. futures + Cash + Credit)", _wrap_visual_builder(build_portfolio_value_stacked_by_ticker_figure, kind="figure")))
+			specs.append(VisualSpec("stack_tickers_pct", "% Portfolio Value — 100% Stacked (Tickers excl. futures + Cash + Credit)", _wrap_visual_builder(build_portfolio_value_stacked_by_ticker_pct_figure, kind="figure")))
 
 
 			if _has_futures(types):
-				specs.append(VisualSpec("stack_tickers_fut", "Futures — Stacked (Tickers)", build_futures_value_stacked_by_ticker_figure))
-				specs.append(VisualSpec("stack_tickers_fut_pct", "% Futures — 100% Stacked (Tickers)", build_futures_value_stacked_by_ticker_pct_figure))
+				specs.append(VisualSpec("stack_tickers_fut", "Futures — Stacked (Tickers)", _wrap_visual_builder(build_futures_value_stacked_by_ticker_figure, kind="figure")))
+				specs.append(VisualSpec("stack_tickers_fut_pct", "% Futures — 100% Stacked (Tickers)", _wrap_visual_builder(build_futures_value_stacked_by_ticker_pct_figure, kind="figure")))
 
 		if types is not None and ticker_volume_prices is not None and tickers is not None:
-			specs.append(VisualSpec("stack_types", "Portfolio Value — Stacked (Types excl. futures + Cash + Credit)", build_portfolio_value_stacked_by_type_figure))
-			specs.append(VisualSpec("stack_types_pct", "% Portfolio Value — 100% Stacked (Types excl. futures + Cash + Credit)", build_portfolio_value_stacked_by_type_pct_figure))
+			specs.append(VisualSpec("stack_types", "Portfolio Value — Stacked (Types excl. futures + Cash + Credit)", _wrap_visual_builder(build_portfolio_value_stacked_by_type_figure, kind="figure")))
+			specs.append(VisualSpec("stack_types_pct", "% Portfolio Value — 100% Stacked (Types excl. futures + Cash + Credit)", _wrap_visual_builder(build_portfolio_value_stacked_by_type_pct_figure, kind="figure")))
 			if _has_futures(types):
-				specs.append(VisualSpec("stack_types_fut", "Futures — Stacked (Types)", build_futures_value_stacked_by_type_figure))
-				specs.append(VisualSpec("stack_types_fut_pct", "% Futures — 100% Stacked (Types)", build_futures_value_stacked_by_type_pct_figure))
+				specs.append(VisualSpec("stack_types_fut", "Futures — Stacked (Types)", _wrap_visual_builder(build_futures_value_stacked_by_type_figure, kind="figure")))
+				specs.append(VisualSpec("stack_types_fut_pct", "% Futures — 100% Stacked (Types)", _wrap_visual_builder(build_futures_value_stacked_by_type_pct_figure, kind="figure")))
 
 	if dt_ok and tickers_profit is not None and tickers is not None:
-		specs.append(VisualSpec("tickers_pnl", "PnL by Ticker (Lines)", build_tickers_pnl_figure))
+		specs.append(VisualSpec("tickers_pnl", "PnL by Ticker (Lines)", _wrap_visual_builder(build_tickers_pnl_figure, kind="figure")))
 		if ticker_volume_prices is not None:
-			specs.append(VisualSpec("tickers_value", "Position Value by Ticker (Lines)", build_tickers_value_figure))
-		specs.append(VisualSpec("tickers_table", "Ticker Summary Table", build_ticker_summary_table_html, kind="html"))
-		specs.append(VisualSpec("tickers_time", "Profit Table — Tickers × Time", build_tickers_time_table_html, kind="html"))
+			specs.append(VisualSpec("tickers_value", "Position Value by Ticker (Lines)", _wrap_visual_builder(build_tickers_value_figure, kind="figure")))
+		specs.append(VisualSpec("tickers_table", "Ticker Summary Table", _wrap_visual_builder(build_ticker_summary_table_html, kind="html"), kind="html"))
+		specs.append(VisualSpec("tickers_time", "Profit Table — Tickers × Time", _wrap_visual_builder(build_tickers_time_table_html, kind="html"), kind="html"))
 		if ticker_volume_prices is not None:
-			specs.append(VisualSpec("tickers_value_time", "Value Table — Tickers × Time", build_tickers_value_time_table_html, kind="html"))
+			specs.append(VisualSpec("tickers_value_time", "Value Table — Tickers × Time", _wrap_visual_builder(build_tickers_value_time_table_html, kind="html"), kind="html"))
 
-		specs.append(VisualSpec("pnl3d_tickers", "PnL — 3D Surface (Tickers)", build_profit_3d_tickers_figure))
+		specs.append(VisualSpec("pnl3d_tickers", "PnL — 3D Surface (Tickers)", _wrap_visual_builder(build_profit_3d_tickers_figure, kind="figure")))
 		if ticker_volume_prices is not None:
-			specs.append(VisualSpec("val3d_tickers", "Value — 3D Surface (Tickers)", build_position_value_3d_tickers_figure))
+			specs.append(VisualSpec("val3d_tickers", "Value — 3D Surface (Tickers)", _wrap_visual_builder(build_position_value_3d_tickers_figure, kind="figure")))
 
-	if dt_ok and results[11] is not None and results[10] is not None:
-		specs.append(VisualSpec("types", "Breakdown by Type (PnL)", build_types_figure))
-		specs.append(VisualSpec("types_table", "Type Summary Table", build_type_summary_table_html, kind="html"))
-		specs.append(VisualSpec("types_time", "Profit Table — Types × Time", build_types_time_table_html, kind="html"))
-		if results[12] is not None:
-			specs.append(VisualSpec("types_value_time", "Value Table — Types × Time", build_types_value_time_table_html, kind="html"))
+	if dt_ok and results_d[11] is not None and results_d[10] is not None:
+		specs.append(VisualSpec("types", "Breakdown by Type (PnL)", _wrap_visual_builder(build_types_figure, kind="figure")))
+		specs.append(VisualSpec("types_table", "Type Summary Table", _wrap_visual_builder(build_type_summary_table_html, kind="html"), kind="html"))
+		specs.append(VisualSpec("types_time", "Profit Table — Types × Time", _wrap_visual_builder(build_types_time_table_html, kind="html"), kind="html"))
+		if results_d[12] is not None:
+			specs.append(VisualSpec("types_value_time", "Value Table — Types × Time", _wrap_visual_builder(build_types_value_time_table_html, kind="html"), kind="html"))
 
-		specs.append(VisualSpec("pnl3d_types", "PnL — 3D Surface (Types)", build_profit_3d_types_figure))
-		if results[12] is not None:
-			specs.append(VisualSpec("val3d_types", "Value — 3D Surface (Types)", build_position_value_3d_types_figure))
+		specs.append(VisualSpec("pnl3d_types", "PnL — 3D Surface (Types)", _wrap_visual_builder(build_profit_3d_types_figure, kind="figure")))
+		if results_d[12] is not None:
+			specs.append(VisualSpec("val3d_types", "Value — 3D Surface (Types)", _wrap_visual_builder(build_position_value_3d_types_figure, kind="figure")))
 
 	if dt_ok and tickers_profit is not None and tickers is not None:
-		specs.append(VisualSpec("dist_tickers", "Final PnL Distribution — Tickers (Bars)", build_distribution_tickers_bar_figure))
-		specs.append(VisualSpec("dist_tickers_hist", "Final PnL Distribution — Tickers (Histogram)", build_distribution_tickers_hist_figure))
-	if dt_ok and results[11] is not None and results[10] is not None:
-		specs.append(VisualSpec("dist_types", "Final PnL Distribution — Types (Bars)", build_distribution_types_bar_figure))
-		specs.append(VisualSpec("dist_types_hist", "Final PnL Distribution — Types (Histogram)", build_distribution_types_hist_figure))
+		specs.append(VisualSpec("dist_tickers", "Final PnL Distribution — Tickers (Bars)", lambda r, b=None: build_distribution_tickers_bar_figure(_results_view(r, 0), b)))
+		specs.append(VisualSpec("dist_tickers_hist", "Final PnL Distribution — Tickers (Histogram)", lambda r, b=None: build_distribution_tickers_hist_figure(_results_view(r, 0), b)))
+	if dt_ok and results_d[11] is not None and results_d[10] is not None:
+		specs.append(VisualSpec("dist_types", "Final PnL Distribution — Types (Bars)", lambda r, b=None: build_distribution_types_bar_figure(_results_view(r, 0), b)))
+		specs.append(VisualSpec("dist_types_hist", "Final PnL Distribution — Types (Histogram)", lambda r, b=None: build_distribution_types_hist_figure(_results_view(r, 0), b)))
 
 
 
@@ -2642,7 +3365,6 @@ def _has_futures(types: Any) -> bool:
 
 
 def _add_3d_date_range_menu(fig: go.Figure, x_labels: List[str], *, x: float = 0.0, y: float = 1.22) -> None:
-	"""Add a dropdown to limit the visible date range on 3D scenes."""
 	if not x_labels:
 		return
 	idx = len(x_labels) - 1
@@ -2679,7 +3401,6 @@ def _add_3d_subset_menu(
  x: float = 0.0,
  y: float = 1.12,
 ) -> None:
-	"""Add a dropdown to pick a subset of rows (tickers/types) for a 3D surface."""
 	if mat.size == 0 or not all_labels:
 		return
 
@@ -3026,10 +3747,20 @@ def build_overview_value_figure(results: List[Any], board: Optional[str] = None)
 
 
 def build_portfolio_value_all_figure(results: List[Any], board: Optional[str] = None) -> go.Figure:
-	"""Single page: Line / Candle / Waterfall for portfolio value."""
 	r = _extract(results)
 	x = _to_datetime_index(r["lookup_days"])
 	xs = [d.strftime("%Y-%m-%d") for d in list(x)]
+	step_ms = 24 * 60 * 60 * 1000
+	try:
+		xv = pd.to_datetime(pd.Series(list(x)), errors="coerce").dropna().sort_values().to_numpy(dtype="datetime64[ns]")
+		if xv.size >= 2:
+			diffs = np.diff(xv.astype("int64"))
+			diffs = diffs[diffs > 0]
+			if diffs.size:
+				step_ms = int(float(np.median(diffs)) / 1_000_000.0)
+				step_ms = int(max(3_600_000, min(step_ms, 90 * 24 * 60 * 60 * 1000)))
+	except Exception:
+		pass
 	value = _as_1d_float(r.get("total_value", None), len(x))
 	start_money = r.get("start_money", None)
 	try:
@@ -3048,6 +3779,11 @@ def build_portfolio_value_all_figure(results: List[Any], board: Optional[str] = 
 	high_ = np.maximum(open_, close_)
 	low_ = np.minimum(open_, close_)
 	candle = go.Candlestick(x=xs, open=open_, high=high_, low=low_, close=close_, name="Candle")
+	try:
+		# Make candles span the active period (especially noticeable for weekly/monthly).
+		candle.update(xperiod=step_ms, xperiodalignment="middle")
+	except Exception:
+		pass
 
 
 	prev = np.concatenate([[start_money_f], value[:-1]])
@@ -3062,6 +3798,11 @@ def build_portfolio_value_all_figure(results: List[Any], board: Optional[str] = 
 	 increasing={"marker": {"color": "#2ca02c"}},
 	 decreasing={"marker": {"color": "#d62728"}},
 	)
+	try:
+		# Avoid very wide bars on weekly/monthly while keeping daily readable.
+		waterfall.update(width=float(step_ms) * 0.65)
+	except Exception:
+		pass
 	start_marker = go.Scatter(
 	 x=[xs[0]],
 	 y=[float(start_money_f)],
@@ -3115,8 +3856,8 @@ def build_portfolio_value_all_figure(results: List[Any], board: Optional[str] = 
 		 "default_index": 0,
 		 "views": [
 		  {"label": "Line", "visible": vis_line, "relayout": {"yaxis.title.text": "Value", "xaxis.rangeslider.visible": True, "xaxis.type": "date"}},
-		  {"label": "Candle", "visible": vis_candle, "relayout": {"yaxis.title.text": "Value", "xaxis.rangeslider.visible": True, "xaxis.type": "category"}},
-		  {"label": "Waterfall", "visible": vis_wf, "relayout": {"yaxis.title.text": "Δ Value", "xaxis.rangeslider.visible": False, "xaxis.type": "date"}},
+		  {"label": "Candle", "visible": vis_candle, "relayout": {"yaxis.title.text": "Value", "xaxis.rangeslider.visible": True, "xaxis.type": "date"}},
+		  {"label": "Waterfall", "visible": vis_wf, "relayout": {"yaxis.title.text": "Δ Value", "xaxis.rangeslider.visible": False, "xaxis.type": "date", "bargap": 0.55, "bargroupgap": 0.0}},
 		 ],
 		}
 	except Exception:
@@ -3171,7 +3912,6 @@ def _stack_components_by_ticker(
  mode: str,
  include_cash_credit: bool,
 ) -> Tuple[pd.DatetimeIndex, List[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-	"""Return (x, labels, values_2d, cash, credit_neg, total_from_components)."""
 	r = _extract(results)
 	x = _to_datetime_index(r["lookup_days"])
 
@@ -3214,7 +3954,6 @@ def _stack_components_by_type(
  mode: str,
  include_cash_credit: bool,
 ) -> Tuple[pd.DatetimeIndex, List[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-	"""Return (x, type_labels, values_2d, cash, credit_neg, total_from_components)."""
 	r = _extract(results)
 	x = _to_datetime_index(r["lookup_days"])
 
@@ -3270,9 +4009,6 @@ def _build_portfolio_stacked(
  title: str,
  percent: bool,
 ) -> go.Figure:
-	"""Stacked area + stacked column toggle."""
-
-
 	if values.size:
 		order = np.argsort(np.abs(values[:, -1]))[::-1]
 		values = values[order]
@@ -3665,7 +4401,6 @@ def build_futures_value_stacked_by_type_pct_figure(results: List[Any], board: Op
 
 
 def _tabulator_html(*, title: str, df: pd.DataFrame) -> str:
-	"""Build a scrollable, selectable, copyable HTML grid using Tabulator (CDN)."""
 	data = df.to_dict(orient="records")
 	columns = []
 	for i, c in enumerate(df.columns):
@@ -3705,7 +4440,6 @@ def _tabulator_html(*, title: str, df: pd.DataFrame) -> str:
 		.tabulator .tabulator-cell {{ user-select: text; }}
 		.tabulator .tabulator-tableholder {{ overflow-x: auto !important; }}
 
-		/* Tabulator styling */
 		.tabulator {{ border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg); min-width: 100%; }}
 		.tabulator .tabulator-tableholder {{ overflow-x: auto; }}
 		.tabulator .tabulator-header {{ background: var(--panel2); border-bottom: 1px solid var(--border); }}
@@ -3728,7 +4462,7 @@ def _tabulator_html(*, title: str, df: pd.DataFrame) -> str:
 <body>
 	<div class='header'>
 		<div class='title'></div>
-		<div class='note'>Tip: drag to select, Ctrl+C to copy. Use header filters to search.</div>
+		<div class='note'>Tip: drag to select, Ctrl+C to copy. Use header filters to search</div>
 	</div>
 	<div class='wrap'>
 		<div id='grid'></div>
@@ -3786,11 +4520,9 @@ def _tabulator_html(*, title: str, df: pd.DataFrame) -> str:
 		}}
 
 		async function _ensurePdf() {{
-			// Tabulator expects a global jsPDF.
 			if (window.jsPDF) return true;
 			try {{
 				await _loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
-				// Expose jsPDF constructor globally.
 				try {{
 					if (!window.jsPDF && window.jspdf && window.jspdf.jsPDF) window.jsPDF = window.jspdf.jsPDF;
 				}} catch (e) {{}}
@@ -3932,7 +4664,10 @@ def _tabulator_html(*, title: str, df: pd.DataFrame) -> str:
 		}});
 
     init();
-		applyTheme(false);
+		try {{
+			const savedTheme = localStorage.getItem('tc_theme');
+			applyTheme(savedTheme === 'dark');
+		}} catch (e) {{ applyTheme(false); }}
 		try {{
 			window.parent && window.parent.postMessage({{ tc_export_caps: _exportCapsTabulator() }}, '*');
 		}} catch (e) {{}}
@@ -3960,7 +4695,6 @@ def _prepend_summary_rows(
  col_labels: List[str],
  rows: List[Tuple[str, np.ndarray]],
 ) -> pd.DataFrame:
-	"""Prepend rows (label + 1D array) above existing matrix DF."""
 	if df is None or df.empty:
 		base_cols = [row_name] + list(col_labels)
 		df = pd.DataFrame(columns=base_cols)
@@ -4086,6 +4820,17 @@ def build_types_value_time_table_html(results: List[Any], board: Optional[str] =
 def build_portfolio_value_waterfall_candle_figure(results: List[Any], board: Optional[str] = None) -> go.Figure:
 	r = _extract(results)
 	x = _to_datetime_index(r["lookup_days"])
+	step_ms = 24 * 60 * 60 * 1000
+	try:
+		xv = pd.to_datetime(pd.Series(list(x)), errors="coerce").dropna().sort_values().to_numpy(dtype="datetime64[ns]")
+		if xv.size >= 2:
+			diffs = np.diff(xv.astype("int64"))
+			diffs = diffs[diffs > 0]
+			if diffs.size:
+				step_ms = int(float(np.median(diffs)) / 1_000_000.0)
+				step_ms = int(max(3_600_000, min(step_ms, 90 * 24 * 60 * 60 * 1000)))
+	except Exception:
+		pass
 	value = _as_1d_float(r["total_value"], len(x))
 	start_money = r.get("start_money", None)
 	try:
@@ -4127,6 +4872,10 @@ def build_portfolio_value_waterfall_candle_figure(results: List[Any], board: Opt
 	 close=close_,
 	 name="Candle",
 	)
+	try:
+		candle.update(xperiod=step_ms, xperiodalignment="middle")
+	except Exception:
+		pass
 
 
 	fig = go.Figure(data=[candle, waterfall])
@@ -4554,9 +5303,9 @@ def build_distribution_tickers_bar_figure(results: List[Any], board: Optional[st
 		pass
 	fig.update_layout(
 	 title=_safe_title(board, "Trade Calculator — Final PnL by Ticker"),
-	 height=750,
+	 height=620,
 	 hovermode="closest",
-	 margin=dict(t=90, l=60, r=30, b=120),
+	 margin=dict(t=80, l=60, r=30, b=80),
 	)
 	fig.update_xaxes(tickangle=45)
 	try:
@@ -4635,9 +5384,9 @@ def build_distribution_tickers_hist_figure(results: List[Any], board: Optional[s
 		pass
 	fig.update_layout(
 	 title=_safe_title(board, "Trade Calculator — Final PnL Histogram (Tickers)"),
-	 height=650,
+	 height=600,
 	 hovermode="closest",
-	 margin=dict(t=90, l=60, r=30, b=60),
+	 margin=dict(t=80, l=60, r=30, b=60),
 	)
 	fig.update_xaxes(title_text="Final PnL")
 	fig.update_yaxes(title_text="Count")
@@ -4707,7 +5456,7 @@ def build_distribution_types_bar_figure(results: List[Any], board: Optional[str]
 	fig.update_layout(
 	 title=_safe_title(board, "Trade Calculator — Final PnL by Type"),
 	 height=600,
-	 margin=dict(t=90, l=60, r=30, b=90),
+	 margin=dict(t=80, l=60, r=30, b=70),
 	)
 	fig.update_xaxes(tickangle=30)
 	try:
@@ -4790,7 +5539,7 @@ def build_distribution_types_hist_figure(results: List[Any], board: Optional[str
 	fig.update_layout(
 	 title=_safe_title(board, "Trade Calculator — Final PnL Histogram (Types)"),
 	 height=600,
-	 margin=dict(t=90, l=60, r=30, b=60),
+	 margin=dict(t=80, l=60, r=30, b=60),
 	)
 	fig.update_xaxes(title_text="Final PnL")
 	fig.update_yaxes(title_text="Count")

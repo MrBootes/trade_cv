@@ -1,6 +1,3 @@
-
-# -*- coding: utf-8 -*-
-
 import csv, re
 import difflib
 from collections import defaultdict, deque

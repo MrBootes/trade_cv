@@ -11,9 +11,6 @@ try:
     from . import starter
     from . import calc_visual
 except ImportError as e:
-    # This module uses package-relative imports. Running it as a file
-    # (`python src/main_workers/main_calc.py`) is not supported; run as a module
-    # or via the console script.
     if __name__ == "__main__":
         raise SystemExit(
             "This module must be run as a package. Use one of:\n"
@@ -26,21 +23,13 @@ except ImportError as e:
 
 
 def generate_lookup_days():
-    global date_format, START_DATE, END_DATE
-
-    while True:
-        raw = input("Choose the date record format (d - days; w - weeks, m - months): ").strip().lower()
-        if raw.isdigit() and int(raw) in [0, 1, 2]:
-            date_format = int(raw)
-            break
-        if raw in ['d', 'w', 'm']:
-            date_format = {'d': 0, 'w': 1, 'm': 2}[raw]
-            break
-        print("Invalid input. Please enter 'd', 'w', 'm', or their corresponding numbers 0, 1, 2.")
+    global START_DATE, END_DATE
 
     while True:
         try:
             start_raw = input("Enter the start record date (YYYY-MM-DD): ")
+            if start_raw.strip() == "":
+                continue
             START_DATE = pd.to_datetime(start_raw, format="%Y-%m-%d")
             break
         except ValueError:
@@ -48,6 +37,8 @@ def generate_lookup_days():
     while True:
         try:
             end_raw = input("Enter the end record date (YYYY-MM-DD): ")
+            if end_raw.strip() == "":
+                continue
             END_DATE = pd.to_datetime(end_raw, format="%Y-%m-%d")
             if END_DATE >= START_DATE:
                 break
@@ -56,69 +47,62 @@ def generate_lookup_days():
         except ValueError:
             print("Invalid date format. Please enter the date in YYYY-MM-DD format.")
 
-    if date_format == 1:
 
-        first = START_DATE
-        while first.weekday() != 6 and first < END_DATE:
-            first += timedelta(days=1)
+    first = START_DATE
+    while first.weekday() != 6 and first < END_DATE:
+        first += timedelta(days=1)
 
-        last = END_DATE
-        while last.weekday() != 6 and last > START_DATE:
-            last -= timedelta(days=1)
+    last = END_DATE
+    while last.weekday() != 6 and last > START_DATE:
+        last -= timedelta(days=1)
 
-        if first > last:
-            return []
+    if first > last:
+        return []
 
-        out = []
-        d = first
-        while d <= last:
-            out.append(d)
-            d += timedelta(days=7)
+    out = []
+    d = first
+    while d <= last:
+        out.append(d)
+        d += timedelta(days=7)
 
-        out.extend([START_DATE, END_DATE])
-        out = sorted({dt.replace(hour=0, minute=0, second=0, microsecond=0) for dt in out})
-        return out
+    out.extend([START_DATE, END_DATE])
+    out = sorted({dt.replace(hour=0, minute=0, second=0, microsecond=0) for dt in out})
+    lookup_weeks = out
 
-    if date_format == 2:
 
-        start_ts = pd.Timestamp(START_DATE.date())
-        end_ts = pd.Timestamp(END_DATE.date())
+    start_ts = pd.Timestamp(START_DATE.date())
+    end_ts = pd.Timestamp(END_DATE.date())
 
-        first = start_ts + pd.offsets.MonthEnd(0)
+    first = start_ts + pd.offsets.MonthEnd(0)
 
-        last = end_ts + pd.offsets.MonthEnd(0)
-        if last.date() > END_DATE.date():
-            last = end_ts + pd.offsets.MonthEnd(-1)
+    last = end_ts + pd.offsets.MonthEnd(0)
+    if last.date() > END_DATE.date():
+        last = end_ts + pd.offsets.MonthEnd(-1)
 
-        if first > last:
-            return []
+    if first > last:
+        return []
 
-        months = []
-        cur = first
-        while cur <= last:
-            months.append(cur.to_pydatetime())
-            cur = cur + pd.offsets.MonthEnd(1)
+    months = []
+    cur = first
+    while cur <= last:
+        months.append(cur.to_pydatetime())
+        cur = cur + pd.offsets.MonthEnd(1)
 
-        months.extend([START_DATE, END_DATE])
-        months = sorted({dt.replace(hour=0, minute=0, second=0, microsecond=0) for dt in months})
-        return months
+    months.extend([START_DATE, END_DATE])
+    months = sorted({dt.replace(hour=0, minute=0, second=0, microsecond=0) for dt in months})
+    lookup_months = months
+
 
     delta = END_DATE - START_DATE
-    return [START_DATE + timedelta(days=i) for i in range(delta.days + 1)]
+    lookup_days = [START_DATE + timedelta(days=i) for i in range(delta.days + 1)]
+
+    return lookup_days, lookup_weeks, lookup_months
 
 
 def fetch_data(ticker, date, endDivider, first_date=-1, multi_return=False):
-    global date_format
 
     if first_date == -1:
         first_date = date
-    elif first_date == -2:
-        if date_format == 1:
-            first_date = datetime.strptime(date, "%Y-%m-%d") - timedelta(days=10)
-            first_date = first_date.strftime("%Y-%m-%d")
-        elif date_format == 2:
-            first_date = datetime.strptime(date, "%Y-%m-%d") - timedelta(days=30)
-            first_date = first_date.strftime("%Y-%m-%d")
     else:
         first_date = first_date = datetime.strptime(date, "%Y-%m-%d") - timedelta(days=(first_date - 1))
         first_date = first_date.strftime("%Y-%m-%d")
@@ -163,27 +147,9 @@ def fetch_data(ticker, date, endDivider, first_date=-1, multi_return=False):
         return None, None
 
 def getPriceTo(ticker, date, endDivider, multi_return=1, isdelta=False):
-    global date_format, sequent_none_count, START_DATE, END_DATE
+    global sequent_none_count, START_DATE, END_DATE
 
-    if date_format == 2 and sequent_none_count >= 3:
-        if not isdelta:
-            return None
-        else:
-            return [None for _k in range(multi_return)]
-    elif date_format == 1 and sequent_none_count >= 7:
-        if not isdelta:
-            return None
-        else:
-            none_return_count = 0
-            current_date = pd.to_datetime(date) - timedelta(days=multi_return - 1)
-            for di in range(multi_return):
-                if current_date.weekday() == 6 or current_date == END_DATE:
-                    none_return_count += 1
-                current_date += timedelta(days=1)
-            multi_return = none_return_count
-            sequent_none_count += 2.5
-            return [None for _k in range(multi_return)]
-    elif date_format == 0 and sequent_none_count >= 12:
+    if sequent_none_count >= 12:
         if not isdelta:
             return None
         else:
@@ -207,7 +173,7 @@ def getPriceTo(ticker, date, endDivider, multi_return=1, isdelta=False):
     else:
         date = str(date)
 
-    if not isdelta or date_format == 2:
+    if not isdelta:
         close_price = fetch_data(ticker, date, endDivider, first_date=-1, multi_return=False)
         if (close_price is not None) and (close_price != 0):
             sequent_none_count = 0
@@ -262,32 +228,14 @@ def getPriceTo(ticker, date, endDivider, multi_return=1, isdelta=False):
                             else:
                                 close_dates.insert(k, current_date.strftime("%Y-%m-%d"))
                                 close_price.insert(k, 0)
-            if date_format == 1:
-                weekly_price = []
-                weekly_dates = []
-                for di in range(len(close_dates)):
-                    weekly_date = close_dates[di]
-                    if pd.to_datetime(weekly_date).weekday() == 6 or pd.to_datetime(weekly_date) == END_DATE or pd.to_datetime(weekly_date) == START_DATE:
-                        weekly_price.append(close_price[close_dates.index(weekly_date)])
-                        weekly_dates.append(weekly_date)
-                close_price = weekly_price
             sequent_none_count = 0
             return close_price
         else:
-            if date_format == 1:
-                none_return_count = 0
-                current_date = pd.to_datetime(date) - timedelta(days=multi_return - 1)
-                for di in range(multi_return):
-                    if current_date.weekday() == 6 or current_date == END_DATE:
-                        none_return_count += 1
-                    current_date += timedelta(days=1)
-                multi_return = none_return_count
             sequent_none_count += 2.5
             return [None for _k in range(multi_return)]
 
 
 def dates_traded_finer(start_date, end_date):
-    global date_format
 
     if isinstance(start_date, np.datetime64):
         if np.isnat(start_date):
@@ -300,20 +248,9 @@ def dates_traded_finer(start_date, end_date):
 
     new_dates = []
     new_delta = []
-    if date_format == 0:
-        current_date = start_date - timedelta(days=1)
-    elif date_format == 1:
-        current_date = start_date - timedelta(days=1)
-        while current_date.weekday() != 6:
-            current_date -= timedelta(days=1)
-    elif date_format == 2:
-        if start_date.month != 1:
-            current_date = start_date.replace(day=1) - timedelta(days=1)
-        else:
-            current_date = start_date.replace(month=1, day=31)
+    current_date = start_date - timedelta(days=1)
 
-    if date_format != 2:
-        day_delta = min((end_date - start_date).days + 10, 500)
+    day_delta = min((end_date - start_date).days + 10, 500)
 
     if end_date - current_date >= timedelta(days=day_delta):
         while current_date <= end_date:
@@ -363,10 +300,15 @@ def calc_main(loaded_data, start_key=None, end_key=None):
     if end_key is None:
         end_key = len(data_list['tickers'])
 
-    lookup_days = generate_lookup_days()
+    lookup_days, lookup_weeks, lookup_months = generate_lookup_days()
     lookup_array = np.array(lookup_days, dtype='datetime64[D]')
 
-    global date_format, START_DATE, END_DATE, endDivider, dataList
+    lookup_weeks_array = np.array(lookup_weeks, dtype='datetime64[D]')
+    lookup_months_array = np.array(lookup_months, dtype='datetime64[D]')
+    lookup_weeks_mask = np.isin(lookup_array, lookup_weeks_array)
+    lookup_months_mask = np.isin(lookup_array, lookup_months_array)
+
+    global START_DATE, END_DATE, endDivider, dataList
 
 
     endDivider = []
@@ -583,27 +525,42 @@ def calc_main(loaded_data, start_key=None, end_key=None):
     total_cash = total_cash * (total_cash >= 0)
 
     types_unique = np.unique(nptypes).tolist()
-    types_profits = np.full(len(types_unique), dtype=object, fill_value=None)
-    types_volume_prices = np.full(len(types_unique), dtype=object, fill_value=None)
-    for ti in range(len(types_unique)):
-        types_profits[ti] = (np.array(tickers_profit)[nptypes == types_unique[ti]].sum(axis=0))
-        types_volume_prices[ti] = (np.array(ticker_volume_prices)[nptypes == types_unique[ti]].sum(axis=0))
+    if len(types_unique) == 0:
+        types_profits = np.zeros((0, len(lookup_days)), dtype=float)
+        types_volume_prices = np.zeros((0, len(lookup_days)), dtype=float)
+    else:
+        types_profits = np.vstack(
+            [np.array(tickers_profit)[nptypes == t].sum(axis=0) for t in types_unique]
+        ).astype(float, copy=False)
+        types_volume_prices = np.vstack(
+            [np.array(ticker_volume_prices)[nptypes == t].sum(axis=0) for t in types_unique]
+        ).astype(float, copy=False)
 
+    lookup_list = (lookup_days, lookup_weeks, lookup_months)
+    tickers_profit_list = (tickers_profit, tickers_profit[:, lookup_weeks_mask], tickers_profit[:, lookup_months_mask])
+    ticker_volume_prices_list = (ticker_volume_prices, ticker_volume_prices[:, lookup_weeks_mask], ticker_volume_prices[:, lookup_months_mask])
+    cash_profit_array_list = (cash_profit_array, cash_profit_array[lookup_weeks_mask], cash_profit_array[lookup_months_mask])
+    total_profit_list = (total_profit, total_profit[lookup_weeks_mask], total_profit[lookup_months_mask])
+    total_cash_list = (total_cash, total_cash[lookup_weeks_mask], total_cash[lookup_months_mask])
+    total_credit_list = (total_credit, total_credit[lookup_weeks_mask], total_credit[lookup_months_mask])
+    total_value_list = (total_value, total_value[lookup_weeks_mask], total_value[lookup_months_mask])
+    types_profits_list = (types_profits, types_profits[:, lookup_weeks_mask], types_profits[:, lookup_months_mask])
+    types_volume_prices_list = (types_volume_prices, types_volume_prices[:, lookup_weeks_mask], types_volume_prices[:, lookup_months_mask])
 
     result = [
-        tickers_profit,
-        lookup_days,
+        tickers_profit_list,
+        lookup_list,
         tickers,
         types,
-        ticker_volume_prices,
-        cash_profit_array,
-        total_profit,
-        total_cash,
-        total_credit,
-        total_value,
+        ticker_volume_prices_list,
+        cash_profit_array_list,
+        total_profit_list,
+        total_cash_list,
+        total_credit_list,
+        total_value_list,
         types_unique,
-        types_profits,
-        types_volume_prices,
+        types_profits_list,
+        types_volume_prices_list,
         start_money
     ]
 
@@ -611,8 +568,6 @@ def calc_main(loaded_data, start_key=None, end_key=None):
 
 
 def fetch_prices(i, tickers, types, dates_traded, lookup_days, ticker_volume, ticker_abs_trade, ticker_abs_krater):
-    global date_format
-
 
     if not isinstance(dates_traded[i], np.ndarray) or len(dates_traded[i]) != len(lookup_days):
         return 0.0, np.zeros(len(lookup_days), dtype=float)
@@ -628,30 +583,27 @@ def fetch_prices(i, tickers, types, dates_traded, lookup_days, ticker_volume, ti
                 if accept_date and accept_prev:
                     flow_dates[-1].append(date)
                 elif accept_date and not accept_prev:
-                    if (len(flow_dates[-1]) < 5 and date_format != 0) or (len(flow_dates[-1]) < 3 and date_format == 0):
+                    if (len(flow_dates[-1]) < 3):
                         flow_dates.pop(-1)
                     flow_dates.append([date])
             else:
                 flow_dates[-1].append(date)
         accept_prev = accept_date
-    if (len(flow_dates[-1]) < 5 and date_format != 0) or (len(flow_dates[-1]) < 3 and date_format == 0):
+    if (len(flow_dates[-1]) < 3):
         flow_dates.pop(-1)
 
-    if len(flow_dates) == 0 or (len(flow_dates) == 1 and len(flow_dates[0]) == 0) or (date_format == 2):
+    if len(flow_dates) == 0 or (len(flow_dates) == 1 and len(flow_dates[0]) == 0):
         flow_dates_use = False
     else:
         flow_dates_use = True
 
     flow_traded = []
     delta_days = []
-    if (date_format == 0 or date_format == 1) and flow_dates_use:
+    if flow_dates_use:
         for fd in flow_dates:
             flow_traded.append([])
             delta_days.append([])
             flow_traded[-1], delta_days[-1] = dates_traded_finer(fd[0], fd[-1])
-    elif date_format == 2 and flow_dates_use:
-        flow_traded = flow_dates
-
 
     flow_index = 0
 
@@ -880,7 +832,13 @@ def router_main(loaded_data):
             boards_lists.append((boards[bi], result))
 
     elif flow_data and (flow_data is not None) and (not trade_data or trade_data is None):
-        lookup_days = generate_lookup_days()
+        lookup_days, lookup_weeks, lookup_months = generate_lookup_days()
+        lookup_array = np.array(lookup_days, dtype='datetime64[D]')
+        lookup_weeks_array = np.array(lookup_weeks, dtype='datetime64[D]')
+        lookup_months_array = np.array(lookup_months, dtype='datetime64[D]')
+        lookup_weeks_mask = np.isin(lookup_array, lookup_weeks_array)
+        lookup_months_mask = np.isin(lookup_array, lookup_months_array)
+
         start_value = get_starting_cash()
         if start_value is None or start_value == "" or start_value == 0:
             end_value = get_starting_cash(end_value=True)
@@ -895,18 +853,27 @@ def router_main(loaded_data):
         total_credit = np.zeros(len(lookup_days), dtype=float) - (total_cash * (total_cash < 0))
         total_cash = total_cash * (total_cash >= 0)
 
+        lookup_weeks_mask
+
+        lookup_list = (lookup_days, lookup_weeks, lookup_months)
+        cash_profit_array_list = (cash_profit_array, cash_profit_array[lookup_weeks_mask], cash_profit_array[lookup_months_mask])
+        total_profit_list = (total_profit, total_profit[lookup_weeks_mask], total_profit[lookup_months_mask])
+        total_cash_list = (total_cash, total_cash[lookup_weeks_mask], total_cash[lookup_months_mask])
+        total_credit_list = (total_credit, total_credit[lookup_weeks_mask], total_credit[lookup_months_mask])
+        total_value_list = (total_value, total_value[lookup_weeks_mask], total_value[lookup_months_mask])
+
 
         result = [
             None,
-            lookup_days,
+            lookup_list,
             None,
             None,
             None,
-            cash_profit_array,
-            total_profit,
-            total_cash,
-            total_credit,
-            total_value,
+            cash_profit_array_list,
+            total_profit_list,
+            total_cash_list,
+            total_credit_list,
+            total_value_list,
             None,
             None,
             None,
@@ -920,9 +887,8 @@ def router_main(loaded_data):
 
 
 def main() -> None:
-    global date_format, START_DATE, END_DATE
+    global START_DATE, END_DATE
 
-    date_format = 0
     START_DATE = None
     END_DATE = None
     loaded_data = starter.main()

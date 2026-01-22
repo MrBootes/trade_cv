@@ -17,7 +17,6 @@ _RE_HAS_LETTERS = re.compile(r'[A-Za-zА-Яа-я]{3,}')
 
 
 def _detect_and_split_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect if dataframe needs column splitting (single column with separators)."""
     if df is None or not isinstance(df, pd.DataFrame):
         return df
 
@@ -43,7 +42,6 @@ def _detect_and_split_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def read_input_file(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
-    """Read an input file (Excel/CSV) into a DataFrame."""
     if not file_path or not isinstance(file_path, str):
         raise ValueError("file_path must be a non-empty string")
 
@@ -86,7 +84,6 @@ def extract_data_from_df(
     column_aliases=None,
     custom_column_names=None,
 ):
-    """Extract target columns from a DataFrame into a dict of lists."""
     if column_aliases is None:
         column_aliases = {}
     if custom_column_names is None:
@@ -135,7 +132,6 @@ def extract_data_from_df(
 
 
 def parse_date(value, dayfirst=None):
-    """Parse date from various formats with optional dayfirst setting."""
     if pd.isna(value):
         return None
     if isinstance(value, pd.Timestamp) or hasattr(value, 'year'):
@@ -165,7 +161,6 @@ def parse_date(value, dayfirst=None):
 
 
 def parse_dates_fast(values, dayfirst=None):
-    """Fast vectorized date parsing with fallback to dateutil."""
     series = pd.Series(values)
     parsed = pd.to_datetime(series, errors='coerce', dayfirst=dayfirst)
 
@@ -193,7 +188,6 @@ def parse_dates_fast(values, dayfirst=None):
 
 
 def detect_date_format(series):
-    """Detect whether dates use day-first or month-first format."""
     def _extract_date_samples(values, limit=10):
         samples_local = []
         for val in values:
@@ -281,7 +275,6 @@ def detect_date_format(series):
 
 
 def convert_date_columns(data, column_names):
-    """Convert specified columns to datetime format with auto-detection."""
     for col_name in column_names:
         if col_name in data and data[col_name]:
             series = pd.Series(data[col_name])
@@ -343,7 +336,6 @@ def _is_missing_cell(value):
 
 
 def forward_fill_rows(data, column_names):
-    """Forward-fill missing identifier cells top-to-bottom by rows."""
     lengths = [len(data.get(c, [])) for c in column_names if isinstance(data.get(c, []), list)]
     if not lengths:
         return data
@@ -378,7 +370,6 @@ def forward_fill_rows(data, column_names):
 
 
 def normalize_marketboards_and_types(data, *, interactive: bool = True):
-    """Normalize boards/type/tickers into strict canonical values."""
     import re
 
     def _norm_token(v) -> str:
@@ -585,7 +576,6 @@ def _pad_to_length(values, n):
 
 
 def validate_column_lengths(data):
-    """Validate that all columns have the same length."""
     columns_with_data = {}
     for col_name, col_data in data.items():
         if not col_name.startswith('_') and col_data:
@@ -605,7 +595,6 @@ def validate_column_lengths(data):
 
 
 def check_and_fill_volume(data, interactive=True):
-    """Check for missing volume values and optionally fill them with 1."""
     volume = data.get('volume', [])
     if not volume:
         return data
@@ -686,8 +675,6 @@ def validate_and_fill_boards(data, interactive=True):
 
 
 def _collect_bad_uno_rows(data: dict) -> dict:
-    """Collect rows with issues (empty, incomplete, unparseable) for UNO format."""
-    # NOTE: This function is intentionally space-indented to avoid TabError.
     problems_list = []
     bad_indices = set()
 
@@ -787,8 +774,6 @@ def _collect_bad_uno_rows(data: dict) -> dict:
 
 
 def _collect_bad_inout_rows(data: dict) -> dict:
-    """Collect rows with issues (empty, incomplete, unparseable) for INOUT format."""
-    # NOTE: This function is intentionally space-indented to avoid TabError.
     problems_list = []
     bad_indices = set()
 
@@ -902,7 +887,6 @@ def _collect_bad_inout_rows(data: dict) -> dict:
 
 
 def _report_and_skip_bad_rows(bad_rows_result: dict, *, trade_type: str = "UNO") -> None:
-	"""Print report of bad rows and ask user if it's OK to skip them."""
 	if not bad_rows_result or not bad_rows_result.get('problems'):
 		return
 
@@ -932,7 +916,6 @@ def _report_and_skip_bad_rows(bad_rows_result: dict, *, trade_type: str = "UNO")
 
 
 def validate_required_identifiers(data):
-    """Validate that type and tickers columns have at least some data."""
     type_values = data.get('type', [])
     tickers_values = data.get('tickers', [])
 
@@ -969,7 +952,6 @@ def validate_required_identifiers(data):
 
 
 def validate_date_price_pairing(data):
-    """Validate that every date has a corresponding price and vice versa."""
     dates_buy = data.get('dates_buy', [])
     buy = data.get('buy', [])
     dates_sell = data.get('dates_sell', [])
@@ -1028,7 +1010,6 @@ def validate_date_price_pairing(data):
 
 
 def validate_trade_rows(data):
-    """Validate that required fields exist for each row with volume."""
     volume = data.get('volume', [])
     dates_buy = data.get('dates_buy', [])
     buy = data.get('buy', [])
@@ -1109,7 +1090,6 @@ def validate_trade_rows(data):
 
 
 def sort_data_by_board(data):
-    """Sort rows by marketboard while keeping columns aligned."""
     boards = data.get('boards')
     if not boards:
         return data
@@ -1128,7 +1108,6 @@ def sort_data_by_board(data):
 
 
 def analyze_sample_format(sample_str):
-    """Analyze a single sample to determine number format."""
     cleaned = re.sub(r'[^\d,.\s-]', '', sample_str).strip()
 
     if not cleaned or not re.search(r'\d', cleaned):
@@ -1201,7 +1180,6 @@ def analyze_sample_format(sample_str):
 
 
 def detect_number_format(series):
-    """Detect the number format from multiple samples of data."""
     samples = []
     for val in series.head(50):
         if pd.notna(val):
@@ -1245,7 +1223,6 @@ def detect_number_format(series):
 
 
 def clean_number(value, decimal_sep='.', thousand_sep=''):
-    """Clean and convert a number string to float."""
     if pd.isna(value):
         return None
 
@@ -1279,7 +1256,6 @@ def clean_number(value, decimal_sep='.', thousand_sep=''):
 
 
 def convert_numeric_series_fast(values, decimal_sep='.', thousand_sep=''):
-    """Fast numeric conversion using vectorized string operations."""
     series = pd.Series(values)
     s = series.astype(str)
     mask_valid = series.notna() & s.str.strip().ne('') & (s.str.lower() != 'nan')
@@ -1325,7 +1301,6 @@ def convert_numeric_series_fast(values, decimal_sep='.', thousand_sep=''):
 
 
 def convert_numeric_columns(data, column_names, manual_format=None, interactive=True):
-    """Convert specified columns to proper numeric format."""
     decimal_places_meta = data.get('_decimal_places', {})
 
     for col_name in column_names:
@@ -1385,7 +1360,6 @@ def convert_numeric_columns(data, column_names, manual_format=None, interactive=
 
 
 def resolve_ambiguous_columns(df, column_mapping, target_columns, aliases=None, interactive=True):
-    """Detect and resolve ambiguous column matches."""
     if aliases is None:
         aliases = {}
 
@@ -1498,7 +1472,6 @@ def resolve_ambiguous_columns(df, column_mapping, target_columns, aliases=None, 
 
 
 def find_matching_column(df, target_columns, aliases=None, interactive=True):
-    """Find matching columns in dataframe with fuzzy matching and alias support."""
     if aliases is None:
         aliases = {}
 
@@ -1664,7 +1637,6 @@ def _column_aliases_uno() -> dict:
 
 
 def load_inout_from_df(df, number_format=None, custom_column_names=None, *, interactive=True):
-    """Load/validate INOUT schema from a pre-read DataFrame."""
     target_columns = ['boards', 'type', 'tickers', 'volume', 'dates_buy', 'buy', 'buy_commission', 'dates_sell', 'sell', 'sell_commission']
     column_aliases = _column_aliases_inout()
 
@@ -1715,7 +1687,6 @@ def load_inout_from_df(df, number_format=None, custom_column_names=None, *, inte
 
 
 def identify_trade_type(df, custom_column_names=None, interactive=False):
-    """Identify whether a pre-read DataFrame is ONES (legacy: UNO) or TWOS (legacy: INOUT)."""
     if df is None or not isinstance(df, pd.DataFrame):
         raise ValueError("df must be a pandas DataFrame")
 

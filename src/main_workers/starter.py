@@ -1,5 +1,3 @@
-"""Interactive loader/dispatcher for trade-cv."""
-
 from __future__ import annotations
 
 from typing import Optional
@@ -169,7 +167,6 @@ def _is_missing_scalar(value) -> bool:
 
 
 def _num_to_clean_str(x) -> str:
-	"""Convert numeric-ish values to a stable decimal string (avoid float artifacts)."""
 	if x is None:
 		return ""
 
@@ -194,7 +191,6 @@ def _num_to_clean_str(x) -> str:
 
 
 def _uno_to_fifo_rows(data: dict):
-	"""Adapt ONES (legacy: UNO) dict-of-lists into fifo_match.py internal row format."""
 	if not isinstance(data, dict):
 		raise ValueError("data must be a dict")
 
@@ -317,7 +313,6 @@ def _data_to_dataframe(data: dict) -> pd.DataFrame:
 
 
 def _prepare_dataframe_for_saving(df_out: pd.DataFrame, *, fmt: str) -> pd.DataFrame:
-	"""Prepare output DataFrame for saving."""
 	if df_out is None or df_out.empty:
 		return df_out
 
@@ -370,7 +365,6 @@ def _prepare_dataframe_for_saving(df_out: pd.DataFrame, *, fmt: str) -> pd.DataF
 
 
 def _offer_save_output(data: dict, *, mode: str, drop_columns: set[str] | None = None) -> None:
-	"""Offer saving validated/sorted data to a file in the program folder."""
 	try:
 		df_out = _data_to_dataframe(data)
 	except Exception as e:
@@ -487,7 +481,6 @@ def _prompt_load_mode() -> str:
 
 
 def _prompt_optional_flow_file_path(default_path: Optional[str]) -> Optional[str]:
-	"""Ask for an optional inflow/outflow file path."""
 	ans = input(
 	 "\nEnter inflow/outflow data file path (blank/none/skip = skip, 'same' = use same file): "
 	).strip().strip('"')
@@ -499,7 +492,6 @@ def _prompt_optional_flow_file_path(default_path: Optional[str]) -> Optional[str
 
 
 def _coerce_trades_to_dict(trade_data):
-	"""Normalize trade data into a single dict-of-lists schema."""
 	if trade_data is None:
 		return None
 

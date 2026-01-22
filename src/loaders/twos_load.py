@@ -220,7 +220,6 @@ def read_trade_data(
  df: Optional[pd.DataFrame] = None,
  interactive: bool = True,
 ):
-	"""Read trade data in INOUT format and return validated INOUT dict-of-lists."""
 	try:
 		input_rows = None
 		if df is None:
