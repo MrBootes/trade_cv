@@ -265,7 +265,7 @@ def read_trade_data(
 
 
 		missing_optional = [c for c in optional_columns if c not in column_mapping]
-		if missing_optional:
+		if missing_optional and not manual:
 			auto_opt = find_matching_column(df, missing_optional, aliases=column_aliases, interactive=False)
 			column_mapping.update(auto_opt)
 
@@ -286,8 +286,16 @@ def read_trade_data(
 
 
 		row_count = max((len(v) for k, v in data.items() if isinstance(v, list) and v and not str(k).startswith('_')), default=int(len(df)))
-		present_optional = [c for c in optional_columns if c in data and isinstance(data[c], list)]
-		for col in present_optional:
+
+		original_has_buy_commission = bool('buy_commission' in column_mapping)
+		original_has_sell_commission = bool('sell_commission' in column_mapping)
+		data['_original_has_buy_commission'] = original_has_buy_commission
+		data['_original_has_sell_commission'] = original_has_sell_commission
+
+		for col in optional_columns:
+			if col not in data or not isinstance(data.get(col), list):
+				data[col] = None
+				continue
 			if len(data[col]) == 0:
 				data[col] = [None] * row_count
 			elif len(data[col]) != row_count:
@@ -300,9 +308,9 @@ def read_trade_data(
 		validate_required_identifiers(data)
 
 		num_cols = ['volume', 'buy', 'sell']
-		if 'buy_commission' in data:
+		if isinstance(data.get('buy_commission'), list):
 			num_cols.append('buy_commission')
-		if 'sell_commission' in data:
+		if isinstance(data.get('sell_commission'), list):
 			num_cols.append('sell_commission')
 		data = convert_numeric_columns(data, num_cols, manual_format=number_format, interactive=interactive)
 		data = convert_date_columns(data, ['dates_buy', 'dates_sell'])

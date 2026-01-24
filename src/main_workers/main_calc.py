@@ -1,4 +1,4 @@
-from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta
 from pathlib import Path
 import time
@@ -327,6 +327,19 @@ def calc_main(loaded_data, start_key=None, end_key=None):
     open_missing_buy_is_short = True
     open_missing_sell_is_long = True
 
+    if data_list['buy_commission'] is not None:
+        buy_fees_addr = True
+        ticker_fees = []
+    else:
+        buy_fees_addr = False
+        ticker_fees = None
+    if data_list['sell_commission'] is not None:
+        sell_fees_addr = True
+        ticker_fees = ticker_fees if ticker_fees is not None else []
+    else:
+        sell_fees_addr = False
+        ticker_fees = None if ticker_fees is None else ticker_fees
+
     tickers = []
     types = []
     dates_traded = []
@@ -335,7 +348,7 @@ def calc_main(loaded_data, start_key=None, end_key=None):
     ticker_abs_krater = []
     skip_first = False
 
-    for idx in tqdm(range(start_key, end_key), desc="Processing trades", unit="trade"):
+    for idx in tqdm(range(start_key, end_key), desc="Processing trades", unit="it"):
         i = idx + start_key
 
         ticker = data_list['tickers'][i]
@@ -352,12 +365,13 @@ def calc_main(loaded_data, start_key=None, end_key=None):
             ticker_volume.append(np.zeros(len(lookup_days)))
             ticker_abs_trade.append(np.zeros(len(lookup_days)))
             ticker_abs_krater.append(np.zeros(len(lookup_days)))
+            if ticker_fees is not None:
+                ticker_fees.append(np.zeros(len(lookup_days)))
         date_buy = data_list['dates_buy'][i]
         date_sell = data_list['dates_sell'][i]
 
 
         if isinstance(date_buy, datetime) is False and hasattr(date_buy, 'year') and hasattr(date_buy, 'month') and hasattr(date_buy, 'day') and not isinstance(date_buy, str) and date_buy is not None:
-
             date_buy = datetime.combine(date_buy, datetime.min.time())
         if isinstance(date_sell, datetime) is False and hasattr(date_sell, 'year') and hasattr(date_sell, 'month') and hasattr(date_sell, 'day') and not isinstance(date_sell, str) and date_sell is not None:
             date_sell = datetime.combine(date_sell, datetime.min.time())
@@ -382,8 +396,6 @@ def calc_main(loaded_data, start_key=None, end_key=None):
             continue
 
         if date_buy is None:
-
-
             open_dt = date_sell
             close_dt = range_end_excl
             close_cash = 0.0
@@ -397,8 +409,6 @@ def calc_main(loaded_data, start_key=None, end_key=None):
                 open_cash = -(abs(sell_cost) * vol) if sell_cost is not None else 0.0
 
         elif date_sell is None:
-
-
             open_dt = date_buy
             close_dt = range_end_excl
             close_cash = 0.0
@@ -407,11 +417,9 @@ def calc_main(loaded_data, start_key=None, end_key=None):
                 position_sign = 1.0
                 open_cash = -(abs(buy_cost) * vol) if buy_cost is not None else 0.0
             else:
-
                 position_sign = -1.0
                 open_cash = (abs(buy_cost) * vol) if buy_cost is not None else 0.0
         elif date_buy <= date_sell:
-
             open_dt = date_buy
             close_dt = date_sell
             position_sign = 1.0
@@ -419,7 +427,6 @@ def calc_main(loaded_data, start_key=None, end_key=None):
             close_cash = (abs(sell_cost) * vol) if sell_cost is not None else 0.0
             close_event_dt = date_sell
         elif date_sell < date_buy:
-
             open_dt = date_sell
             close_dt = date_buy
             position_sign = -1.0
@@ -427,10 +434,8 @@ def calc_main(loaded_data, start_key=None, end_key=None):
             close_cash = -(abs(buy_cost) * vol) if buy_cost is not None else 0.0
             close_event_dt = date_buy
 
-
         if open_dt is None:
             continue
-
 
         effective_open = max(open_dt, range_start)
         effective_close = min(close_dt, range_end_excl)
@@ -440,12 +445,10 @@ def calc_main(loaded_data, start_key=None, end_key=None):
         open_day = _to_day64(effective_open)
         close_day = _to_day64(effective_close)
 
-
         hold_mask = (lookup_array >= open_day) & (lookup_array < close_day)
         if hold_mask.any():
             ticker_mask = ticker_mask | hold_mask
             ticker_volume[-1] = ticker_volume[-1] + (position_sign * vol * hold_mask)
-
 
         if open_cash != 0.0:
             step_open_day = _to_day64(max(open_dt, range_start))
@@ -453,10 +456,15 @@ def calc_main(loaded_data, start_key=None, end_key=None):
                 ticker_abs_trade[-1] = ticker_abs_trade[-1] + (open_cash * (lookup_array >= step_open_day))
             else:
                 ticker_abs_krater[-1] = ticker_abs_krater[-1] + (position_sign * vol * (lookup_array >= step_open_day))
+                if buy_fees_addr:
+                    ticker_fees[-1] = ticker_fees[-1] + (data_list['buy_commission'][i] * (lookup_array >= step_open_day))
 
         if close_cash != 0.0 and close_event_dt is not None:
             step_close_day = _to_day64(max(close_event_dt, range_start))
             ticker_abs_trade[-1] = ticker_abs_trade[-1] + (close_cash * (lookup_array >= step_close_day))
+            if sell_fees_addr:
+                ticker_fees[-1] = ticker_fees[-1] + (data_list['sell_commission'][i] * (lookup_array >= step_close_day))
+        
     dates_traded[-1] = np.where(ticker_mask, lookup_array, np.datetime64("NaT"))
 
 
@@ -479,6 +487,13 @@ def calc_main(loaded_data, start_key=None, end_key=None):
 
         valid_futures = [fut for _, fut in tasks if fut is not None]
         if valid_futures:
+            for futi in tqdm(
+                as_completed(valid_futures),
+                total=len(valid_futures),
+                desc="Fetching prices",
+                unit="it",
+            ):
+                pass
             wait(valid_futures, return_when=ALL_COMPLETED)
 
         ordered_outputs = []
@@ -520,6 +535,9 @@ def calc_main(loaded_data, start_key=None, end_key=None):
     total_credit = (ticker_abs_trade * ((ticker_volume < 0) & not_future_mask)).sum(axis=0)
     total_cash = np.full(len(total_profit), start_money)
     total_cash = total_cash + plus_ticker_value + cash_profit_array + (ticker_abs_trade * (ticker_volume == 0)).sum(axis=0)
+
+    if ticker_fees is not None:
+        total_cash = total_cash - ticker_fees.sum(axis=0)
 
     total_credit = total_credit - (total_cash * (total_cash < 0))
     total_cash = total_cash * (total_cash >= 0)
@@ -655,8 +673,6 @@ def fetch_prices(i, tickers, types, dates_traded, lookup_days, ticker_volume, ti
                     ordered_outputs.append(0)
             else:
                 price = fut.result()
-                # IMPORTANT: MOEX can return no candle for a date (None).
-
 
                 if price is None or price == 0:
                     idx = 0

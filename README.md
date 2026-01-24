@@ -129,7 +129,7 @@ Commonly present fields include:
 - currency (optional)
 - market/provider for instrument metadata (optional)
 
-Market/provider note (v0.1.0): public enrichment is implemented for **MOEX**.
+Market/provider note (v0.1.1 and lower): public enrichment is implemented for **MOEX**.
 
 ### TWOS (legacy: INOUT)
 

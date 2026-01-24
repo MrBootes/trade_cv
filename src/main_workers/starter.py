@@ -8,7 +8,6 @@ import sys
 import time
 
 import pandas as pd
-from openpyxl import load_workbook
 
 from loaders.load_validate import identify_trade_type, read_input_file
 
@@ -293,10 +292,13 @@ def _uno_to_fifo_rows(data: dict):
 def _data_to_dataframe(data: dict) -> pd.DataFrame:
 	if not isinstance(data, dict):
 		raise ValueError("data must be a dict")
+
+	auto_added = data.get('_auto_added_columns', [])
+	auto_added_set = set(auto_added) if isinstance(auto_added, list) else set()
 	visible = {
 	 k: v
 	 for k, v in data.items()
-	 if not str(k).startswith('_') and isinstance(v, list)
+	 if not str(k).startswith('_') and isinstance(v, list) and (k not in auto_added_set)
 	}
 	if not visible:
 		return pd.DataFrame()
@@ -309,7 +311,91 @@ def _data_to_dataframe(data: dict) -> pd.DataFrame:
 	return pd.DataFrame(visible)
 
 
+def _merge_flow_dicts(existing: dict, incoming: dict) -> dict:
+	if not isinstance(existing, dict) or not isinstance(incoming, dict):
+		raise TypeError("FLOW data must be dicts")
 
+	def _base_len_any_lists(d: dict) -> int:
+		lens = [len(v) for v in d.values() if isinstance(v, list)]
+		return max(lens, default=0)
+
+	len_a = int(existing.get("_output_rows", 0) or 0) if isinstance(existing.get("_output_rows"), int) else 0
+	len_b = int(incoming.get("_output_rows", 0) or 0) if isinstance(incoming.get("_output_rows"), int) else 0
+	if len_a <= 0:
+		len_a = _base_len_any_lists(existing)
+	if len_b <= 0:
+		len_b = _base_len_any_lists(incoming)
+
+	def _pad_list(v, target_len: int) -> list:
+		lst = v if isinstance(v, list) else []
+		if len(lst) < target_len:
+			return list(lst) + [None] * (target_len - len(lst))
+		if len(lst) > target_len:
+			return list(lst[:target_len])
+		return list(lst)
+
+	def _merge_dict_of_lists(a, b, la: int, lb: int) -> dict:
+		ma = a if isinstance(a, dict) else {}
+		mb = b if isinstance(b, dict) else {}
+		out_meta: dict = {}
+		inner_keys = list(ma.keys()) + [k for k in mb.keys() if k not in ma]
+		for kk in inner_keys:
+			va = ma.get(kk)
+			vb = mb.get(kk)
+			if isinstance(va, list) or isinstance(vb, list):
+				out_meta[kk] = _pad_list(va, la) + _pad_list(vb, lb)
+			else:
+				out_meta[kk] = va if kk in ma else vb
+		return out_meta
+
+	ordered_keys = list(existing.keys()) + [k for k in incoming.keys() if k not in existing]
+
+	out: dict = {}
+	for k in ordered_keys:
+		if k in {"_input_rows", "_output_rows"}:
+			continue
+		va = existing.get(k)
+		vb = incoming.get(k)
+		if isinstance(va, list) or isinstance(vb, list):
+			out[k] = _pad_list(va, len_a) + _pad_list(vb, len_b)
+		elif isinstance(va, dict) or isinstance(vb, dict):
+			out[k] = _merge_dict_of_lists(va, vb, len_a, len_b)
+		else:
+			out[k] = va if k in existing else vb
+
+	if "date" not in out:
+		out["date"] = _pad_list(existing.get("date"), len_a) + _pad_list(incoming.get("date"), len_b)
+	if "cash" not in out:
+		out["cash"] = _pad_list(existing.get("cash"), len_a) + _pad_list(incoming.get("cash"), len_b)
+
+	out_rows = len(out.get("date", [])) if isinstance(out.get("date"), list) else max((len(v) for v in out.values() if isinstance(v, list)), default=0)
+	out["_input_rows"] = int(existing.get("_input_rows", len_a) or 0) + int(incoming.get("_input_rows", len_b) or 0)
+	out["_output_rows"] = int(out_rows)
+
+	try:
+		dates = out.get("date", []) if isinstance(out.get("date"), list) else []
+		if dates and out_rows == len(dates):
+			dt = pd.to_datetime(pd.Series(dates, copy=False), errors="coerce")
+			order = dt.argsort(kind="mergesort").to_numpy()
+
+			def _reorder_list(lst: list) -> list:
+				if not isinstance(lst, list) or len(lst) != out_rows:
+					return lst
+				return [lst[i] for i in order]
+
+			for k, v in list(out.items()):
+				if isinstance(v, list):
+					out[k] = _reorder_list(v)
+				elif isinstance(v, dict):
+					new_meta = dict(v)
+					for kk, vv in v.items():
+						if isinstance(vv, list):
+							new_meta[kk] = _reorder_list(vv)
+					out[k] = new_meta
+	except Exception:
+		pass
+
+	return out
 
 
 def _prepare_dataframe_for_saving(df_out: pd.DataFrame, *, fmt: str) -> pd.DataFrame:
@@ -399,6 +485,7 @@ def _offer_save_output(data: dict, *, mode: str, drop_columns: set[str] | None =
 	out_path = os.path.join(program_dir, filename)
 
 	def _apply_excel_date_formats(path: str) -> None:
+		from openpyxl import load_workbook
 
 		last_err: Exception | None = None
 		for _ in range(6):
@@ -484,7 +571,7 @@ def _prompt_optional_flow_file_path(default_path: Optional[str]) -> Optional[str
 	ans = input(
 	 "\nEnter inflow/outflow data file path (blank/none/skip = skip, 'same' = use same file): "
 	).strip().strip('"')
-	if ans == "" or ans.lower() in {"skip", "none", "null"}:
+	if ans == "" or ans.lower() in {"skip", "none", "null", "exit", "quit", "no", "n", "q", "stop", "e", "leave"}:
 		return None
 	if ans.lower() == "same":
 		return default_path
@@ -712,22 +799,28 @@ def main():
 		raise RuntimeError(f"Unexpected mode: {mode}")
 
 
-	try:
-		flow_path = _prompt_optional_flow_file_path(file_path)
-		if flow_path:
+	from loaders.flow_load import display_data as flow_display, read_trade_data as flow_read
+	while True:
+		try:
+			flow_path = _prompt_optional_flow_file_path(file_path)
+			if flow_path is None:
+				print("\nExited FLOW load.")
+				break
+			if flow_path:
+				flow_sheet = sheet_name
+				if file_path is None or os.path.abspath(flow_path) != os.path.abspath(file_path):
+					flow_sheet = input("Enter Excel sheet name for FLOW (blank for default / for CSV): ").strip().strip('"') or None
 
-			flow_sheet = sheet_name
-			if file_path is None or os.path.abspath(flow_path) != os.path.abspath(file_path):
-				flow_sheet = input("Enter Excel sheet name for FLOW (blank for default / for CSV): ").strip().strip('"') or None
-
-			from loaders.flow_load import display_data as flow_display, read_trade_data as flow_read
-			flow_data = flow_read(flow_path, sheet_name=flow_sheet, interactive=loader_interactive)
-			if flow_data:
-				flow_display(flow_data)
-				_offer_save_output(flow_data, mode="FLOW")
-				loaded_data[1] = flow_data
-	except Exception as e:
-		print(f"\n⚠ FLOW load skipped due to error: {e}")
+				flow_data = flow_read(flow_path, sheet_name=flow_sheet, interactive=loader_interactive)
+				if flow_data:
+					flow_display(flow_data)
+					_offer_save_output(flow_data, mode="FLOW")
+					if loaded_data[1] is None:
+						loaded_data[1] = flow_data
+					else:
+						loaded_data[1] = _merge_flow_dicts(loaded_data[1], flow_data)
+		except Exception as e:
+			print(f"\n⚠ FLOW load skipped due to error: {e}")
 
 	return loaded_data[0], loaded_data[1]
 

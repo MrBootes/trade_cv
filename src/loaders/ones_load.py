@@ -341,9 +341,8 @@ def read_trade_data(
 
 
 		missing_optional = [c for c in optional_columns if c not in column_mapping]
-		if missing_optional:
+		if missing_optional and not manual:
 			auto_opt = find_matching_column(df, missing_optional, aliases=column_aliases, interactive=False)
-
 			column_mapping.update(auto_opt)
 
 		data_raw = {}
@@ -371,12 +370,17 @@ def read_trade_data(
 
 
 		row_count = max((len(v) for k, v in data_raw.items() if isinstance(v, list) and v and not str(k).startswith('_')), default=int(len(df)))
-		present_optional = [c for c in optional_columns if c in data_raw and isinstance(data_raw[c], list)]
-		for col in present_optional:
-			if len(data_raw[col]) == 0:
-				data_raw[col] = [None] * row_count
-			elif len(data_raw[col]) != row_count:
-				data_raw[col] = (data_raw[col] + [None] * row_count)[:row_count]
+
+		original_has_commission = bool('commission' in column_mapping)
+		data_raw['_original_has_commission'] = original_has_commission
+
+		if 'commission' not in data_raw or not isinstance(data_raw.get('commission'), list):
+			data_raw['commission'] = None
+		else:
+			if len(data_raw['commission']) == 0:
+				data_raw['commission'] = [None] * row_count
+			elif len(data_raw['commission']) != row_count:
+				data_raw['commission'] = (data_raw['commission'] + [None] * row_count)[:row_count]
 
 
 		data_raw = forward_fill_rows(data_raw, ['type', 'tickers'])
@@ -384,7 +388,7 @@ def read_trade_data(
 		data_raw = normalize_marketboards_and_types(data_raw, interactive=interactive)
 		validate_required_identifiers(data_raw)
 
-		num_cols = ['volume_signed', 'price_trade'] + (["commission"] if 'commission' in data_raw else [])
+		num_cols = ['volume_signed', 'price_trade'] + (["commission"] if isinstance(data_raw.get('commission'), list) else [])
 		data_raw = convert_numeric_columns(data_raw, num_cols, manual_format=number_format, interactive=interactive)
 		data_raw = convert_date_columns(data_raw, ['date_trade'])
 
