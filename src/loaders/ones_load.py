@@ -17,6 +17,7 @@ from loaders.load_validate import (
  convert_numeric_columns,
  find_matching_column,
  forward_fill_rows,
+ normalize_column_name,
  normalize_marketboards_and_types,
  resolve_ambiguous_columns,
  validate_column_lengths,
@@ -177,7 +178,8 @@ def _column_aliases_uno() -> dict:
 	 'tickers': ['ticker', 'symbol', 'symbols', 'stock', 'stocks', 'isin', 'name', 'names', 'asset_name', 'assetname', 'instrument_name', 'instrumentname', 'security_name', 'securityname', 'code', 'codes', 'id', 'ids'],
 	 'date_trade': ['date', 'datetime', 'date_time', 'timestamp', 'dt', 'time', 'trade_date', 'trade_datetime', 'execution_date', 'execution_datetime', 'deal_date', 'deal_datetime'],
 	 'volume_signed': ['volume', 'vol', 'qty', 'quantity', 'amount', 'size', 'signed_volume', 'volume_signed', 'directional_volume', 'direction', 'side_volume'],
-	 'price_trade': ['price', 'trade_price', 'execution_price', 'deal_price', 'rate', 'cost', 'value', 'price_trade'],
+	 'price_trade': ['price', 'trade_price', 'execution_price', 'deal_price', 'rate', 'price_trade', 'unit_price', 'price_per_unit'],
+	 'cost_trade': ['cost', 'value', 'amount', 'total', 'sum', 'trade_value', 'trade_amount', 'trade_total', 'cost_trade', 'total_cost', 'gross_amount'],
 	}
 
 
@@ -310,7 +312,7 @@ def read_trade_data(
 			else:
 				print(f"Successfully read file: {file_path}")
 
-		target_columns = ['boards', 'type', 'tickers', 'date_trade', 'volume_signed', 'price_trade']
+		target_columns = ['boards', 'type', 'tickers', 'date_trade', 'volume_signed', 'price_trade', 'cost_trade']
 		optional_columns = ['commission']
 		all_columns = target_columns + optional_columns
 		column_aliases = _column_aliases_uno()
@@ -331,22 +333,157 @@ def read_trade_data(
 					print(f"  {target_col}: ✗ Column '{chosen}' not found in file")
 
 
-		required_for_uno = ['type', 'tickers', 'date_trade', 'volume_signed', 'price_trade']
-		missing_required = [c for c in required_for_uno if c not in column_mapping]
+		required_core = ['type', 'tickers', 'date_trade', 'volume_signed']
+		missing_required = [c for c in required_core if c not in column_mapping]
 		if missing_required:
 			print(f"\nMatching columns for missing fields: {', '.join(missing_required)}")
 			auto_map = find_matching_column(df, missing_required, aliases=column_aliases, interactive=interactive)
 			auto_map = resolve_ambiguous_columns(df, auto_map, missing_required, aliases=column_aliases, interactive=interactive)
 			column_mapping.update(auto_map)
+			column_mapping = resolve_ambiguous_columns(df, column_mapping, all_columns, aliases=column_aliases, interactive=interactive)
 
 
 		missing_optional = [c for c in optional_columns if c not in column_mapping]
 		if missing_optional and not manual:
 			auto_opt = find_matching_column(df, missing_optional, aliases=column_aliases, interactive=False)
 			column_mapping.update(auto_opt)
+			column_mapping = resolve_ambiguous_columns(df, column_mapping, all_columns, aliases=column_aliases, interactive=interactive)
+
+		def _excel_col_letter(idx0: int) -> str:
+			idx = int(idx0) + 1
+			out = []
+			while idx > 0:
+				idx, rem = divmod(idx - 1, 26)
+				out.append(chr(ord('A') + rem))
+			return ''.join(reversed(out))
+
+		def _col_label(col_name: str) -> str:
+			try:
+				idx0 = list(df.columns).index(col_name)
+				return f"{_excel_col_letter(idx0)}: {col_name}"
+			except Exception:
+				return str(col_name)
+
+		def _sample_values(col_name: str, *, limit: int = 5) -> list:
+			try:
+				return df[col_name].head(limit).tolist()
+			except Exception:
+				return []
+
+		def _gather_candidates(target: str) -> list[tuple[str, str]]:
+			df_cols_normalized = {normalize_column_name(col): col for col in df.columns}
+			normalized_target = normalize_column_name(target)
+			candidates: list[tuple[str, str]] = []
+
+			if normalized_target in df_cols_normalized:
+				candidates.append((df_cols_normalized[normalized_target], 'exact'))
+			for alias in column_aliases.get(target, []):
+				norm_alias = normalize_column_name(alias)
+				if norm_alias in df_cols_normalized:
+					col_name = df_cols_normalized[norm_alias]
+					if all(col_name != c[0] for c in candidates):
+						candidates.append((col_name, 'alias'))
+
+			possible_names = [normalized_target] + [normalize_column_name(x) for x in column_aliases.get(target, [])]
+			for possible in possible_names:
+				if len(possible) < 5:
+					continue
+				matches = get_close_matches(possible, df_cols_normalized.keys(), n=3, cutoff=0.75)
+				for m in matches:
+					col_name = df_cols_normalized[m]
+					if all(col_name != c[0] for c in candidates):
+						candidates.append((col_name, 'fuzzy'))
+
+			def _rank(item: tuple[str, str]) -> int:
+				return {'exact': 0, 'alias': 1, 'fuzzy': 2}.get(item[1], 99)
+			return sorted(candidates, key=_rank)
+
+		def _choose_from_candidates(kind: str, cands: list[tuple[str, str]]) -> str | None:
+			if not cands:
+				return None
+			if len(cands) == 1 or not interactive:
+				return cands[0][0]
+
+			print(f"\nSelect {kind.upper()} column:")
+			for i, (col_name, reason) in enumerate(cands, 1):
+				print(f"  {i}) {_col_label(col_name)} [{reason}]")
+				samples = _sample_values(col_name, limit=5)
+				for j, v in enumerate(samples, 1):
+					print(f"     {j}. {v}")
+			print("Enter number, or blank for default.")
+			while True:
+				try:
+					ans = input("> ").strip().lower()
+				except EOFError:
+					ans = ''
+				if not ans:
+					return cands[0][0]
+				if ans.isdigit():
+					idx = int(ans)
+					if 1 <= idx <= len(cands):
+						return cands[idx - 1][0]
+				print(f"Invalid selection. Choose 1..{len(cands)} or blank.")
+
+		def _prompt_kind(*, have_price: bool, have_cost: bool) -> str:
+			default = 'price' if have_price else 'cost'
+			if not interactive:
+				return default
+			while True:
+				try:
+					ans = input(f"Use price or cost? (p/c) [default {default[0]}]: ").strip().lower()
+				except EOFError:
+					ans = ''
+				if not ans:
+					return default
+				if ans in {'p', 'price'}:
+					return 'price'
+				if ans in {'c', 'cost'}:
+					return 'cost'
+				print("Please enter 'p' (price) or 'c' (cost).")
+
+		price_cands = [(column_mapping['price_trade'], 'manual')] if 'price_trade' in column_mapping else _gather_candidates('price_trade')
+		cost_cands = [(column_mapping['cost_trade'], 'manual')] if 'cost_trade' in column_mapping else _gather_candidates('cost_trade')
+
+		if not price_cands and not cost_cands:
+			raise ValueError("ONES requires either price_trade (per-unit) or cost_trade (total cost).")
+
+		print("\n" + "=" * 80)
+		if price_cands and cost_cands:
+			print("Found PRICE candidates:")
+			for col_name, reason in price_cands[:10]:
+				print(f"  - {_col_label(col_name)} [{reason}]")
+			print("Found COST candidates:")
+			for col_name, reason in cost_cands[:10]:
+				print(f"  - {_col_label(col_name)} [{reason}]")
+			print("You will choose whether to use PRICE or COST, then pick a column.")
+		elif price_cands:
+			print("Found value column(s) that look like PRICE:")
+			for col_name, reason in price_cands[:10]:
+				print(f"  - {_col_label(col_name)} [{reason}]")
+			print("Do you want to treat the selected column as per-unit PRICE or as total COST (will be divided by volume)?")
+		else:
+			print("Found value column(s) that look like COST:")
+			for col_name, reason in cost_cands[:10]:
+				print(f"  - {_col_label(col_name)} [{reason}]")
+			print("Do you want to treat the selected column as per-unit PRICE or as total COST (will be divided by volume)?")
+
+		kind = _prompt_kind(have_price=bool(price_cands), have_cost=bool(cost_cands))
+		if kind == 'price' and price_cands:
+			value_col = _choose_from_candidates('price', price_cands)
+			chosen_kind = 'price'
+		elif kind == 'cost' and cost_cands:
+			value_col = _choose_from_candidates('cost', cost_cands)
+			chosen_kind = 'cost'
+		else:
+			chosen_kind = 'price' if price_cands else 'cost'
+			value_col = _choose_from_candidates(chosen_kind, price_cands if price_cands else cost_cands)
+
+		column_mapping['_value_col'] = value_col
+		column_mapping['_value_kind'] = chosen_kind
 
 		data_raw = {}
-		for target_col in target_columns:
+		base_targets = ['boards', 'type', 'tickers', 'date_trade', 'volume_signed']
+		for target_col in base_targets:
 			if target_col in column_mapping:
 				actual_col = column_mapping[target_col]
 				raw_list = df[actual_col].tolist()
@@ -356,6 +493,10 @@ def read_trade_data(
 				if target_col == 'boards':
 					continue
 				data_raw[target_col] = []
+
+		value_col = column_mapping.get('_value_col')
+		data_raw['price_trade'] = [None if pd.isna(v) or (isinstance(v, str) and not v.strip()) else v for v in df[value_col].tolist()]
+		data_raw['_value_kind'] = column_mapping.get('_value_kind')
 
 
 
@@ -390,7 +531,23 @@ def read_trade_data(
 
 		num_cols = ['volume_signed', 'price_trade'] + (["commission"] if isinstance(data_raw.get('commission'), list) else [])
 		data_raw = convert_numeric_columns(data_raw, num_cols, manual_format=number_format, interactive=interactive)
+
+		def _compute_price_from_cost(cost_list: list, volume_list: list) -> list:
+			import numpy as np
+			cost_arr = np.asarray(cost_list, dtype=float)
+			vol_arr = np.asarray(volume_list, dtype=float)
+			den = np.abs(vol_arr)
+			out = np.full(cost_arr.shape, np.nan, dtype=float)
+			np.divide(np.abs(cost_arr), den, out=out, where=den != 0)
+			res = out.tolist()
+			return [None if (x is None or (isinstance(x, float) and np.isnan(x))) else float(x) for x in res]
+
+		# Convert COST into per-unit PRICE before any further validations.
+		if data_raw.get('_value_kind') == 'cost':
+			data_raw['price_trade'] = _compute_price_from_cost(data_raw.get('price_trade', []), data_raw.get('volume_signed', []))
+
 		data_raw = convert_date_columns(data_raw, ['date_trade'])
+		data_raw.pop('_value_kind', None)
 
 
 		print(f"\nChecking for problematic rows...")

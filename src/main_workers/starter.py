@@ -127,7 +127,8 @@ def _prompt_manual_mapping(df: pd.DataFrame, mode: str, *, interactive: bool) ->
 		 ("tickers", False),
 		 ("date_trade", False),
 		 ("volume_signed", False),
-		 ("price_trade", False),
+		 ("price_trade", True),
+		 ("cost_trade", True),
 		 ("commission", True),
 		]
 		for field, optional in fields:
@@ -142,10 +143,12 @@ def _prompt_manual_mapping(df: pd.DataFrame, mode: str, *, interactive: bool) ->
 		 ("tickers", False),
 		 ("volume", False),
 		 ("dates_buy", False),
-		 ("buy", False),
+		 ("buy_price", True),
+		 ("buy_cost", True),
 		 ("buy_commission", True),
 		 ("dates_sell", False),
-		 ("sell", False),
+		 ("sell_price", True),
+		 ("sell_cost", True),
 		 ("sell_commission", True),
 		]
 		for field, optional in fields:
@@ -594,7 +597,6 @@ def _coerce_trades_to_dict(trade_data):
 		return out
 
 	def _normalize_dict_only(d: dict) -> dict:
-	 # IMPORTANT: Do not auto-add or auto-fill marketboard here.
 		return _normalize_missing_in_dict(d)
 
 	def _to_float(x):

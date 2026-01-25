@@ -1617,8 +1617,12 @@ def _column_aliases_inout() -> dict:
         'volume': ['vol', 'volume', 'quantity', 'qty', 'amount', 'count', 'shares', 'volume_traded', 'volumetraded', 'trade_volume', 'tradevolume', 'number_of_shares', 'numberofshares', 'num_shares', 'numshares', 'trade_qty', 'tradeqty', 'trade_quantity', 'tradequantity'],
         'dates_buy': ['datebuy', 'date_buy', 'datesbuy', 'dates_buy', 'buy_dates', 'buydates', 'dbuy', 'buyd', 'bdate', 'dateb', 'bday', 'dayb', 'buy_day', 'buyday', 'buy_date', 'buydate', 'opendate', 'open_date', 'purchase_date', 'purchasedate', 'buy_time', 'buytime', 'open_time', 'opentime', 'purchase_time', 'purchasetime', 'trade_open_date', 'tradeopendate', 'trade_open_time', 'tradeopentime', 'opening_date', 'openingdate', 'opening_time', 'openingtimes', 'entry_date', 'entrydate', 'entry_time', 'entrytime', 'buy_datetime', 'buydatetime', 'open_datetime', 'opendatetime', 'purchase_datetime', 'purchasedatetime', 'trade_open_datetime', 'tradeopendatetime', 'entry_datetime', 'entrydatetime'],
         'buy': ['buy', 'buy_c', 'price_buy', 'pricebuy', 'pbuy', 'buyp', 'buyc', 'buy_price', 'buyprice', 'price', 'cost', 'purchase_price', 'open_price', 'openprice', 'purchase', 'open_cost', 'opencost', 'buy_cost', 'buycost', 'purchase_cost', 'purchasecost', 'trade_open_cost', 'tradeopencost', 'entry_cost', 'entrycost', 'trade_entry_cost', 'tradeentrycost', 'trade_entry_price', 'tradeentryprice', 'entry_price', 'entryprice'],
+        'buy_price': ['buy', 'buy_c', 'price_buy', 'pricebuy', 'pbuy', 'buyp', 'buyc', 'buy_price', 'buyprice', 'purchase_price', 'open_price', 'openprice', 'trade_entry_price', 'tradeentryprice', 'entry_price', 'entryprice'],
+        'buy_cost': ['purchase', 'open_cost', 'opencost', 'buy_cost', 'buycost', 'purchase_cost', 'purchasecost', 'trade_open_cost', 'tradeopencost', 'entry_cost', 'entrycost', 'trade_entry_cost', 'tradeentrycost', 'buy_value', 'buy_amount', 'buy_total', 'amount_buy', 'value_buy', 'total_buy', 'cost_buy'],
         'dates_sell': ['date_sell', 'datesell', 'dates_sell', 'datessell', 'sell_dates', 'selldates', 'dsell', 'selld', 'sdate', 'sday', 'sell_day', 'sellday', 'date_close', 'dateclose', 'sell_date', 'selldate', 'close_date', 'closedate', 'sell_time', 'selltime', 'close_time', 'closetime', 'exit_time', 'exittime', 'exit_date', 'exitdate', 'trade_close_date', 'tradeclosedate', 'trade_close_time', 'tradeclosetime', 'closing_date', 'closingdate', 'closing_time', 'closingtime', 'sell_datetime', 'selldatetime', 'close_datetime', 'closedatetime', 'exit_datetime', 'exitdatetime', 'trade_close_datetime', 'tradeclosedatetime'],
         'sell': ['sell', 'sell_price', 'sellprice', 'price_sell', 'pricesell', 'psell', 'sellp', 'sell_c', 'sellc', 'sell_cost', 'sellcost', 'price', 'cost', 'close_cost', 'closecost', 'exit_cost', 'exitcost', 'trade_close_cost', 'tradeclosecost', 'trade_exit_cost', 'tradeexitcost', 'trade_exit_price', 'tradeexitprice', 'close_price', 'closeprice', 'exit_price', 'exitprice'],
+        'sell_price': ['sell', 'sell_price', 'sellprice', 'price_sell', 'pricesell', 'psell', 'sellp', 'sell_c', 'sellc', 'trade_exit_price', 'tradeexitprice', 'close_price', 'closeprice', 'exit_price', 'exitprice'],
+        'sell_cost': ['sell_cost', 'sellcost', 'close_cost', 'closecost', 'exit_cost', 'exitcost', 'trade_close_cost', 'tradeclosecost', 'trade_exit_cost', 'tradeexitcost', 'sell_value', 'sell_amount', 'sell_total', 'amount_sell', 'value_sell', 'total_sell', 'cost_sell'],
         'buy_commission': ['buy_commission', 'commission_buy', 'buy_fee', 'fee_buy', 'broker_fee_buy', 'broker_commission_buy', 'commissionb', 'feeb', 'com_buy', 'fee_buy_total'],
         'sell_commission': ['sell_commission', 'commission_sell', 'sell_fee', 'fee_sell', 'broker_fee_sell', 'broker_commission_sell', 'commissions', 'fees', 'com_sell', 'fee_sell_total'],
     }
@@ -1631,7 +1635,8 @@ def _column_aliases_uno() -> dict:
         'tickers': ['ticker', 'symbol', 'symbols', 'stock', 'stocks', 'isin', 'name', 'names', 'asset_name', 'assetname', 'instrument_name', 'instrumentname', 'security_name', 'securityname', 'code', 'codes', 'id', 'ids'],
         'date_trade': ['date', 'datetime', 'date_time', 'timestamp', 'dt', 'time', 'trade_date', 'trade_datetime', 'execution_date', 'execution_datetime', 'deal_date', 'deal_datetime'],
         'volume_signed': ['volume', 'vol', 'qty', 'quantity', 'amount', 'size', 'signed_volume', 'volume_signed', 'directional_volume', 'direction', 'side_volume'],
-        'price_trade': ['price', 'trade_price', 'execution_price', 'deal_price', 'rate', 'cost', 'value', 'price_trade'],
+        'price_trade': ['price', 'trade_price', 'execution_price', 'deal_price', 'rate', 'price_trade', 'unit_price', 'price_per_unit'],
+        'cost_trade': ['cost', 'value', 'amount', 'total', 'sum', 'trade_value', 'trade_amount', 'trade_total', 'cost_trade', 'total_cost', 'gross_amount'],
         'commission': ['commission', 'fee', 'fees', 'broker_fee', 'broker_commission', 'trade_fee', 'trade_commission', 'commission_trade', 'fee_trade'],
     }
 
@@ -1707,8 +1712,8 @@ def identify_trade_type(df, custom_column_names=None, interactive=False):
             'score': have_required * 10 + have_total * 2 + bonus,
         }
 
-    uno_targets = ['boards', 'type', 'tickers', 'date_trade', 'volume_signed', 'price_trade', 'commission']
-    uno_required = ['type', 'tickers', 'date_trade', 'volume_signed', 'price_trade']
+    uno_targets = ['boards', 'type', 'tickers', 'date_trade', 'volume_signed', 'price_trade', 'cost_trade', 'commission']
+    uno_required = ['type', 'tickers', 'date_trade', 'volume_signed']
     uno_res = _score(
         uno_targets,
         _column_aliases_uno(),
@@ -1716,8 +1721,8 @@ def identify_trade_type(df, custom_column_names=None, interactive=False):
         unique_bonus_key='volume_signed',
     )
 
-    inout_targets = ['boards', 'type', 'tickers', 'volume', 'dates_buy', 'buy', 'buy_commission', 'dates_sell', 'sell', 'sell_commission']
-    inout_required = ['type', 'tickers', 'dates_buy', 'buy', 'dates_sell', 'sell']
+    inout_targets = ['boards', 'type', 'tickers', 'volume', 'dates_buy', 'buy', 'buy_price', 'buy_cost', 'buy_commission', 'dates_sell', 'sell', 'sell_price', 'sell_cost', 'sell_commission']
+    inout_required = ['type', 'tickers', 'dates_buy', 'dates_sell']
     inout_res = _score(
         inout_targets,
         _column_aliases_inout(),
@@ -1728,9 +1733,9 @@ def identify_trade_type(df, custom_column_names=None, interactive=False):
 
     if custom_column_names:
         keys = set(custom_column_names.keys())
-        if 'volume_signed' in keys or 'date_trade' in keys or 'price_trade' in keys:
+        if 'volume_signed' in keys or 'date_trade' in keys or 'price_trade' in keys or 'cost_trade' in keys:
             return 'ONES'
-        if 'dates_buy' in keys or 'dates_sell' in keys or 'buy' in keys or 'sell' in keys:
+        if 'dates_buy' in keys or 'dates_sell' in keys or 'buy' in keys or 'sell' in keys or 'buy_price' in keys or 'buy_cost' in keys or 'sell_price' in keys or 'sell_cost' in keys:
             return 'TWOS'
 
 

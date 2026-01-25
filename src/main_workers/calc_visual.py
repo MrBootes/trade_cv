@@ -3799,7 +3799,6 @@ def build_portfolio_value_all_figure(results: List[Any], board: Optional[str] = 
 	 decreasing={"marker": {"color": "#d62728"}},
 	)
 	try:
-		# Avoid very wide bars on weekly/monthly while keeping daily readable.
 		waterfall.update(width=float(step_ms) * 0.65)
 	except Exception:
 		pass
