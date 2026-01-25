@@ -41,7 +41,7 @@ def _detect_and_split_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def read_input_file(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
+def read_input_file(file_path: str, sheet_name: Optional[str] = None, *, header_row: int = 0) -> pd.DataFrame:
     if not file_path or not isinstance(file_path, str):
         raise ValueError("file_path must be a non-empty string")
 
@@ -49,13 +49,13 @@ def read_input_file(file_path: str, sheet_name: Optional[str] = None) -> pd.Data
 
     if file_extension in {".xlsx", ".xls"}:
         if sheet_name is None:
-            df = pd.read_excel(file_path)
+            df = pd.read_excel(file_path, header=header_row)
         else:
-            df = pd.read_excel(file_path, sheet_name=sheet_name)
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row)
         return _detect_and_split_columns(df)
 
     if file_extension == ".csv":
-        return pd.read_csv(file_path, sep=None, engine="python")
+        return pd.read_csv(file_path, sep=None, engine="python", header=header_row)
 
     raise ValueError(
         f"Unsupported file format: {file_extension}. Use .xlsx, .xls, or .csv"

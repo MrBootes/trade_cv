@@ -725,7 +725,22 @@ def main():
 		sheet_name = _prompt_sheet_name()
 		mode = _prompt_load_mode()
 
-		df = read_input_file(file_path, sheet_name=sheet_name)
+		df = read_input_file(file_path, sheet_name=sheet_name, header_row=0)
+		# Header may be on 2nd row. If we can't identify any trade type from row-1 header,
+		# retry with row 2 as header (data starts from row 3).
+		try:
+			_ = identify_trade_type(df, interactive=False)
+		except ValueError as e:
+			msg = str(e)
+			if "Could not identify trade type" in msg:
+				try:
+					df2 = read_input_file(file_path, sheet_name=sheet_name, header_row=1)
+					_ = identify_trade_type(df2, interactive=False)
+				except Exception:
+					df2 = None
+				if df2 is not None:
+					print("\nNo columns matched in row 1 header; using row 2 as header (data starts from row 3).")
+					df = df2
 
 	if mode == "AUTO":
 		detected = identify_trade_type(df, interactive=False)

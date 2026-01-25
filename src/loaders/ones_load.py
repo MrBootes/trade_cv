@@ -300,7 +300,7 @@ def read_trade_data(
 	try:
 		input_rows = None
 		if df is None:
-			df = read_input_file(file_path, sheet_name=sheet_name)
+			df = read_input_file(file_path, sheet_name=sheet_name, header_row=0)
 			file_extension = os.path.splitext(file_path)[1].lower()
 			if file_extension in ['.xlsx', '.xls']:
 				if sheet_name is None:
@@ -316,6 +316,28 @@ def read_trade_data(
 		optional_columns = ['commission']
 		all_columns = target_columns + optional_columns
 		column_aliases = _column_aliases_uno()
+
+		def _header_has_any_matches(_df: pd.DataFrame) -> bool:
+			try:
+				df_norm = {normalize_column_name(c) for c in list(_df.columns)}
+			except Exception:
+				return False
+			wanted = set()
+			for t in (target_columns + optional_columns):
+				wanted.add(normalize_column_name(t))
+				for a in column_aliases.get(t, []):
+					wanted.add(normalize_column_name(a))
+			return bool(df_norm & wanted)
+
+		# Header may be on the 2nd row. Only retry if 1st-row header matches nothing.
+		if df is not None and file_path and not _header_has_any_matches(df):
+			try:
+				df2 = read_input_file(file_path, sheet_name=sheet_name, header_row=1)
+			except Exception:
+				df2 = None
+			if isinstance(df2, pd.DataFrame) and _header_has_any_matches(df2):
+				print("\nNo columns matched in row 1 header; using row 2 as header (data starts from row 3).")
+				df = df2
 
 
 		column_mapping = {}
